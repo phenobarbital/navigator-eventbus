@@ -35,5 +35,12 @@ jobs:
       - name: Type check (mypy)
         run: uv run mypy src/
 
+      - name: Neutrality guard (no parrot.* imports)
+        run: |
+          if grep -rnE '^\s*(from|import)\s+parrot(\.|\s|$)' src/navigator_eventbus/; then
+            echo "::error::parrot.* imports found in src/navigator_eventbus/ — this package must stay neutral"
+            exit 1
+          fi
+
       - name: Run tests
         run: uv run pytest tests/ -x -q --tb=short -m "not redis"
