@@ -17,14 +17,13 @@ Naive timestamps from legacy sources are COERCED to UTC here (documented
 behaviour) — only direct :class:`EventEnvelope` construction rejects naive
 datetimes.
 """
+import uuid
 from datetime import datetime, timezone
 from typing import Any
-import uuid
-
-from navigator_eventbus.evb import Event, EventPriority
-from navigator_eventbus.hooks.models import HookEvent
 
 from navigator_eventbus.envelope import EventEnvelope, Severity
+from navigator_eventbus.evb import Event, EventPriority
+from navigator_eventbus.hooks.models import HookEvent
 
 
 def _ensure_aware_utc(ts: datetime) -> datetime:

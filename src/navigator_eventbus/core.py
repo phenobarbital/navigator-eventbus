@@ -33,9 +33,9 @@ from typing import Any, Awaitable, Callable, Optional
 
 from navconfig.logging import logging
 
-from navigator_eventbus.evb import EventPriority
-from navigator_eventbus.envelope import EventEnvelope, Severity
 from navigator_eventbus.backends.base import TransportBackend
+from navigator_eventbus.envelope import EventEnvelope, Severity
+from navigator_eventbus.evb import EventPriority
 
 # Backpressure policy names (per topic class).
 POLICY_BLOCK = "block"
@@ -347,7 +347,7 @@ class BusCore:
     async def _backend_publish(self, envelope: EventEnvelope) -> None:
         """Fan *envelope* out to the transport backend (failures isolated)."""
         try:
-            await self._backend.publish(envelope)
+            await self._backend.publish(envelope)  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001 — degraded mode, local OK
             self.logger.warning(
                 "Transport backend publish failed for %s (%s): %s — "

@@ -172,11 +172,11 @@ class EventBus:
         # Lazy imports — envelope/converters import THIS module for
         # EventPriority/Event, so bus modules cannot be imported at the
         # top of evb.py without a circular-import failure.
-        from navigator_eventbus.core import BusCore
         from navigator_eventbus.backends.memory import MemoryBackend
         from navigator_eventbus.backends.redis_pubsub import (
             RedisPubSubBackend,
         )
+        from navigator_eventbus.core import BusCore
 
         self.use_redis = use_redis and redis_url is not None
         self.redis_url = redis_url
@@ -287,7 +287,7 @@ class EventBus:
             async def wrapped_handler(envelope: "EventEnvelope") -> None:
                 await handler(_envelope_to_event(envelope))
         else:
-            def wrapped_handler(envelope: "EventEnvelope") -> None:
+            def wrapped_handler(envelope: "EventEnvelope") -> None:  # type: ignore[misc]
                 handler(_envelope_to_event(envelope))
 
         return self._core.subscribe(

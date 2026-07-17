@@ -12,11 +12,11 @@ FEAT-176 rationale: ~5x faster instantiation than Pydantic on hot paths.
 Pydantic validation happens ONLY at ingress boundaries (see
 ``ingress_models.py``).
 """
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import IntEnum
 from typing import Any, Optional
-import uuid
 
 from navigator_eventbus.evb import EventPriority
 
