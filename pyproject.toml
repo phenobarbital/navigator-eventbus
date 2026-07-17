@@ -58,6 +58,7 @@ all = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-aiohttp>=1.0",
     "ruff>=0.4",
     "mypy>=1.10",
 ]
@@ -89,6 +90,9 @@ markers = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+# Generated gRPC code (events_pb2.py / events_pb2_grpc.py) — do not lint
+# machine-generated stubs (mirrors ai-parrot's proto/README.md convention).
+extend-exclude = ["src/navigator_eventbus/ingress/proto/events_pb2*.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
@@ -96,3 +100,4 @@ select = ["E", "F", "W", "I"]
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
+exclude = ["src/navigator_eventbus/ingress/proto/events_pb2.*\\.py$"]
