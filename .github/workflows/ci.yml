@@ -1,0 +1,39 @@
+name: CI — navigator-eventbus
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: "Test (Python ${{ matrix.python-version }})"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Sync package (all extras, dev)
+        run: uv sync --extra all --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check src/ tests/
+
+      - name: Type check (mypy)
+        run: uv run mypy src/
+
+      - name: Run tests
+        run: uv run pytest tests/ -x -q --tb=short -m "not redis"

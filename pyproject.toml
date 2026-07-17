@@ -1,0 +1,98 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "navigator-eventbus"
+version = "0.1.0"
+description = "Standalone async event bus + generic hooks fabric (extracted from ai-parrot FEAT-310)"
+authors = [
+    {name = "Jesus Lara", email = "jesuslara@phenobarbital.info"}
+]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+keywords = ["asyncio", "eventbus", "events", "hooks", "pubsub", "redis-streams"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+    "Framework :: AsyncIO",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "navconfig[default]>=2.2.2",
+    "asyncdb>=2.11",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+redis = [
+    "redis>=5",
+]
+grpc = [
+    "grpcio>=1.74",
+    "grpcio-tools>=1.74",
+]
+notify = [
+    "async-notify>=1.5.2",
+]
+scheduler = [
+    "apscheduler",
+]
+watchdog = [
+    "watchdog",
+]
+mqtt = [
+    "gmqtt",
+]
+all = [
+    "navigator-eventbus[redis,grpc,notify,scheduler,watchdog,mqtt]",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/phenobarbital/navigator-eventbus"
+Source = "https://github.com/phenobarbital/navigator-eventbus"
+Tracker = "https://github.com/phenobarbital/navigator-eventbus/issues"
+
+# ---------------------------------------------------------------------------
+# Hatchling — src/ layout
+# ---------------------------------------------------------------------------
+[tool.hatch.build.targets.wheel]
+packages = ["src/navigator_eventbus"]
+
+# ---------------------------------------------------------------------------
+# Shared tool configs
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+markers = [
+    "redis: marks tests that require a running Redis server (deselect with '-m \"not redis\"')",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
