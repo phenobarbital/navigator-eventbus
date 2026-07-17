@@ -7,13 +7,16 @@ juntos al paquete (son modelos de datos, no lógica de integración).
 
 **Cambio de contrato (FEAT-312, único de esta fase)**: ``HookType`` deja de
 ser un ``Enum`` cerrado y pasa a un tipo ABIERTO — un ``str`` validado
-contra un registro dinámico (:class:`HookTypeRegistry`). El paquete
-pre-registra los hook types GENÉRICOS (scheduler, file_watchdog,
-postgres_listen, imap_watchdog, file_upload, broker_redis,
-broker_rabbitmq, broker_mqtt, broker_sqs, filesystem, webhook); cada app
-consumidora registra los suyos al importar (p. ej. ai-parrot registra
-jira_webhook, github_webhook, sharepoint, telegram, whatsapp, msteams,
-whatsapp_redis, matrix — fase 4, fuera de alcance aquí).
+contra un registro dinámico (:class:`HookTypeRegistry`). Per the spec §2
+decision #2 amendment (post-implementation revision, see Revision History):
+the package pre-registers, at import time, ALL 18 hook types from the
+pre-FEAT-312 closed enum (10 generics + the 8 ai-parrot-specific
+integration types: jira_webhook, github_webhook, sharepoint, telegram,
+whatsapp, msteams, whatsapp_redis, matrix) PLUS the new generic
+``"webhook"`` type introduced by this package — full backward
+compatibility, zero registration wiring required to reproduce FEAT-310
+behavior. Any NEW consuming app can still register additional custom hook
+types dynamically via ``HOOK_TYPES.register(...)`` at its own import time.
 """
 from datetime import datetime
 from enum import Enum
@@ -25,10 +28,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class HookTypeRegistry:
     """Dynamic registry of hook types (replaces the closed ``HookType`` enum).
 
-    The package pre-registers the generic hook types at import time; each
-    consuming application registers its own (integration-specific) hook
-    types at ITS import time — no static enum to extend, no coupling back
-    to this package's source.
+    The package pre-registers, at import time, all 18 hook types from the
+    pre-FEAT-312 closed enum plus the new generic ``"webhook"`` type (full
+    backward compatibility — see module docstring). Any consuming
+    application can still register additional, new custom hook types at
+    ITS own import time — no static enum to extend, no coupling back to
+    this package's source.
     """
 
     def __init__(self) -> None:
@@ -87,32 +92,42 @@ _GENERIC_HOOK_TYPES = (
     "filesystem",
     "webhook",
 )
-for _name in _GENERIC_HOOK_TYPES:
+
+#: The eight ai-parrot-specific integration hook types from the pre-FEAT-312
+#: closed ``HookType(str, Enum)``. Pre-registered for full backward
+#: compatibility per the amended spec §2 decision #2 (see Revision History
+#: in ``eventbus-core-extraction.spec.md``) — a fresh consuming app is free
+#: to register its OWN new custom hook types the same way, this list only
+#: covers the legacy 8 that existed before the extraction.
+_LEGACY_APP_SPECIFIC_HOOK_TYPES = (
+    "jira_webhook",
+    "github_webhook",
+    "sharepoint",
+    "telegram",
+    "whatsapp",
+    "msteams",
+    "whatsapp_redis",
+    "matrix",
+)
+
+for _name in (*_GENERIC_HOOK_TYPES, *_LEGACY_APP_SPECIFIC_HOOK_TYPES):
     HOOK_TYPES.register(_name)
 
 
 class HookType:
     """Backward-compat string constants for the 18 pre-FEAT-312 hook types.
 
-    **Not** a registry membership shortcut — these are plain string
-    constants (``HookType.SCHEDULER == "scheduler"``) provided so
-    attribute-style access (e.g. ``BaseHook.hook_type: str = HookType.SCHEDULER``,
-    or existing call sites doing ``HookType.X``) keeps working with a
-    minimal diff after the closed ``HookType(str, Enum)`` was replaced by
-    the open :class:`HookTypeRegistry`.
+    Plain string constants (``HookType.SCHEDULER == "scheduler"``) provided
+    so attribute-style access (e.g.
+    ``BaseHook.hook_type: str = HookType.SCHEDULER``, or existing call
+    sites doing ``HookType.X``) keeps working with a minimal diff after the
+    closed ``HookType(str, Enum)`` was replaced by the open
+    :class:`HookTypeRegistry`.
 
-    Per spec §2 decision #2 (closed, do not re-open): this package
-    pre-registers in :data:`HOOK_TYPES` ONLY the generic types
-    (``_GENERIC_HOOK_TYPES`` above). The eight ai-parrot-specific
-    constants below (``JIRA_WEBHOOK``, ``GITHUB_WEBHOOK``, ``SHAREPOINT``,
-    ``TELEGRAM``, ``WHATSAPP``, ``MSTEAMS``, ``WHATSAPP_REDIS``,
-    ``MATRIX``) are exposed here for readability/compat ONLY — they are
-    NOT pre-registered; a consuming app must call
-    ``HOOK_TYPES.register(HookType.JIRA_WEBHOOK)`` (or the raw string) at
-    its own import time before constructing a ``HookEvent`` with that
-    ``hook_type``, exactly as the spec's "cada app registra los suyos al
-    importar" decision requires. Constructing one without registering
-    first raises ``ValidationError`` — this is intentional, not a bug.
+    All 18 names below (10 original generics + the 8 ai-parrot-specific
+    integration types) are pre-registered in :data:`HOOK_TYPES` at import
+    time, per the amended spec §2 decision #2 — full backward compatibility
+    with FEAT-310, no per-app registration wiring required to reproduce it.
     """
 
     SCHEDULER = "scheduler"
@@ -125,7 +140,7 @@ class HookType:
     BROKER_MQTT = "broker_mqtt"
     BROKER_SQS = "broker_sqs"
     FILESYSTEM = "filesystem"
-    # Ai-parrot-specific — NOT pre-registered in HOOK_TYPES (see docstring).
+    # Ai-parrot-specific — pre-registered in HOOK_TYPES (see docstring).
     JIRA_WEBHOOK = "jira_webhook"
     GITHUB_WEBHOOK = "github_webhook"
     SHAREPOINT = "sharepoint"

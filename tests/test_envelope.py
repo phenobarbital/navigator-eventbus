@@ -3,9 +3,10 @@
 Mudado desde
 ``packages/ai-parrot/tests/core/events/bus/test_envelope.py``
 (ai-parrot@686aba1fe, FEAT-310) — imports adapted to
-``navigator_eventbus``; ``HookType.JIRA_WEBHOOK`` (integration-specific,
-NOT pre-registered by this package) replaced with the generic
-``"webhook"`` hook type.
+``navigator_eventbus``; ``HookType.JIRA_WEBHOOK`` replaced with the
+generic ``"webhook"`` hook type (both are pre-registered by this package
+per the amended spec decision #2 — the substitution is kept for parity
+with the original fixture data, not because JIRA_WEBHOOK is unavailable).
 """
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone

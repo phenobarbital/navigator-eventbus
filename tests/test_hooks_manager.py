@@ -3,9 +3,11 @@
 Mudado desde
 ``packages/ai-parrot/tests/core/hooks/{test_hookmanager_route_to_bus,
 test_hookmanager_eventbus}.py`` (ai-parrot@686aba1fe, FEAT-310) — imports
-adapted to ``navigator_eventbus``. ``HookType.JIRA_WEBHOOK`` is
-registered locally by the one test that needs a non-generic topic
-(simulating ai-parrot's own phase-4 registration).
+adapted to ``navigator_eventbus``. ``HookType.JIRA_WEBHOOK`` is one of the
+18 legacy hook types the package pre-registers at import time (amended
+spec decision #2 — see Revision History) — used directly below, no
+per-test registration wiring needed (and none should unregister it: it's
+permanent module-level state shared by the whole test session).
 """
 import asyncio
 import time
@@ -16,7 +18,7 @@ import pytest
 from navigator_eventbus import Event, EventBus
 from navigator_eventbus.envelope import Severity
 from navigator_eventbus.hooks.manager import HookManager
-from navigator_eventbus.hooks.models import HOOK_TYPES, HookEvent, HookType
+from navigator_eventbus.hooks.models import HookEvent, HookType
 
 
 def make_event(hook_type=HookType.SCHEDULER, event_type="tick") -> HookEvent:
@@ -40,15 +42,7 @@ async def wait_until(condition, timeout: float = 2.0) -> None:
     pytest.fail("condition not met within timeout")
 
 
-@pytest.fixture
-def jira_webhook_registered():
-    """Simulates ai-parrot registering its own hook type at import time."""
-    HOOK_TYPES.register(HookType.JIRA_WEBHOOK)
-    yield HookType.JIRA_WEBHOOK
-    HOOK_TYPES.unregister(HookType.JIRA_WEBHOOK)
-
-
-async def test_route_to_bus_publishes_envelope(jira_webhook_registered):
+async def test_route_to_bus_publishes_envelope():
     """route_to_bus=True → first-class hooks.<type>.<event> publication."""
     bus = EventBus()
     received: list[Event] = []
@@ -65,7 +59,7 @@ async def test_route_to_bus_publishes_envelope(jira_webhook_registered):
     mgr.set_event_bus(bus)
 
     dispatch = mgr._build_dispatch()
-    hook_event = make_event(jira_webhook_registered, "issue_created")
+    hook_event = make_event(HookType.JIRA_WEBHOOK, "issue_created")
     await dispatch(hook_event)
 
     cb.assert_awaited_once_with(hook_event)  # callback untouched
