@@ -91,6 +91,51 @@ for _name in _GENERIC_HOOK_TYPES:
     HOOK_TYPES.register(_name)
 
 
+class HookType:
+    """Backward-compat string constants for the 18 pre-FEAT-312 hook types.
+
+    **Not** a registry membership shortcut — these are plain string
+    constants (``HookType.SCHEDULER == "scheduler"``) provided so
+    attribute-style access (e.g. ``BaseHook.hook_type: str = HookType.SCHEDULER``,
+    or existing call sites doing ``HookType.X``) keeps working with a
+    minimal diff after the closed ``HookType(str, Enum)`` was replaced by
+    the open :class:`HookTypeRegistry`.
+
+    Per spec §2 decision #2 (closed, do not re-open): this package
+    pre-registers in :data:`HOOK_TYPES` ONLY the generic types
+    (``_GENERIC_HOOK_TYPES`` above). The eight ai-parrot-specific
+    constants below (``JIRA_WEBHOOK``, ``GITHUB_WEBHOOK``, ``SHAREPOINT``,
+    ``TELEGRAM``, ``WHATSAPP``, ``MSTEAMS``, ``WHATSAPP_REDIS``,
+    ``MATRIX``) are exposed here for readability/compat ONLY — they are
+    NOT pre-registered; a consuming app must call
+    ``HOOK_TYPES.register(HookType.JIRA_WEBHOOK)`` (or the raw string) at
+    its own import time before constructing a ``HookEvent`` with that
+    ``hook_type``, exactly as the spec's "cada app registra los suyos al
+    importar" decision requires. Constructing one without registering
+    first raises ``ValidationError`` — this is intentional, not a bug.
+    """
+
+    SCHEDULER = "scheduler"
+    FILE_WATCHDOG = "file_watchdog"
+    POSTGRES_LISTEN = "postgres_listen"
+    IMAP_WATCHDOG = "imap_watchdog"
+    FILE_UPLOAD = "file_upload"
+    BROKER_REDIS = "broker_redis"
+    BROKER_RABBITMQ = "broker_rabbitmq"
+    BROKER_MQTT = "broker_mqtt"
+    BROKER_SQS = "broker_sqs"
+    FILESYSTEM = "filesystem"
+    # Ai-parrot-specific — NOT pre-registered in HOOK_TYPES (see docstring).
+    JIRA_WEBHOOK = "jira_webhook"
+    GITHUB_WEBHOOK = "github_webhook"
+    SHAREPOINT = "sharepoint"
+    TELEGRAM = "telegram"
+    WHATSAPP = "whatsapp"
+    MSTEAMS = "msteams"
+    WHATSAPP_REDIS = "whatsapp_redis"
+    MATRIX = "matrix"
+
+
 class HookEvent(BaseModel):
     """Unified event emitted by any hook into the consuming application."""
     hook_id: str
