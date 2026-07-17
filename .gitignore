@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# SDD artifacts
+artifacts/
+.autopilot/
