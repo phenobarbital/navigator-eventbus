@@ -7,7 +7,13 @@ Extracted from ai-parrot's `parrot.core.events` / `parrot.core.hooks`
 This is Phase 1 (FEAT-312). Public API re-exports the same surface as
 FEAT-310's `parrot.core.events` under the new import root — see
 `sdd/specs/eventbus-core-extraction.spec.md` §2 "New Public Interfaces".
+
+Phase 2 (FEAT-313) adds the `lifecycle` subpackage — typed, frozen
+lifecycle event machinery (`EventRegistry`, `EventEmitterMixin`, generic
+subscribers, etc.), independent of the bus core above. See
+`sdd/specs/eventbus-lifecycle-extraction.spec.md`.
 """
+from navigator_eventbus import lifecycle
 from navigator_eventbus.core import BackpressureError, BusClosedError, BusCore
 from navigator_eventbus.dlq import DLQHandler
 from navigator_eventbus.envelope import EventEnvelope, Severity
@@ -29,4 +35,5 @@ __all__ = [
     "EventSubscription",
     "IngressEnvelope",
     "Severity",
+    "lifecycle",
 ]
