@@ -25,3 +25,17 @@ REDIS_BROKER_DB: int = config.getint("REDIS_BROKER_DB", fallback=0)
 REDIS_BROKER_URL: str = (
     f"redis://{REDIS_BROKER_HOST}:{REDIS_BROKER_PORT}/{REDIS_BROKER_DB}"
 )
+
+# ---------------------------------------------------------------------------
+# RabbitMQ broker (TASK-1816)
+# ---------------------------------------------------------------------------
+RABBITMQ_HOST: str = config.get("RABBITMQ_HOST", fallback="localhost")
+RABBITMQ_PORT: int = config.getint("RABBITMQ_PORT", fallback=5672)
+RABBITMQ_USER: str = config.get("RABBITMQ_USER", fallback="guest")
+RABBITMQ_PASS: str = config.get("RABBITMQ_PASS", fallback="guest")
+RABBITMQ_VHOST: str = config.get("RABBITMQ_VHOST", fallback="navigator")
+#: RabbitMQ DSN, built from the constants above (navconfig-native — replaces
+#: ``navigator.conf.rabbitmq_dsn``).
+rabbitmq_dsn: str = (
+    f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT}/{RABBITMQ_VHOST}"
+)
