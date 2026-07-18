@@ -14,3 +14,14 @@ from navconfig import config
 BROKER_MANAGER_QUEUE_SIZE: int = config.getint(
     "BROKER_MANAGER_QUEUE_SIZE", fallback=1000
 )
+
+# ---------------------------------------------------------------------------
+# Redis broker (TASK-1815)
+# ---------------------------------------------------------------------------
+REDIS_BROKER_HOST: str = config.get("REDIS_BROKER_HOST", fallback="localhost")
+REDIS_BROKER_PORT: int = config.getint("REDIS_BROKER_PORT", fallback=6379)
+REDIS_BROKER_PASSWORD = config.get("REDIS_BROKER_PASSWORD", fallback=None)
+REDIS_BROKER_DB: int = config.getint("REDIS_BROKER_DB", fallback=0)
+REDIS_BROKER_URL: str = (
+    f"redis://{REDIS_BROKER_HOST}:{REDIS_BROKER_PORT}/{REDIS_BROKER_DB}"
+)
