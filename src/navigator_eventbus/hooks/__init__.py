@@ -49,7 +49,8 @@ def __getattr__(name: str):
         # Generic hooks (migrated)
         "SchedulerHook": ".scheduler",
         "FileWatchdogHook": ".file_watchdog",
-        # Broker hooks (migrated; navigator.brokers/gmqtt lazy-imports intact)
+        # Broker hooks (migrated; Redis/RabbitMQ/SQS rewired to the internal
+        # brokers port by FEAT-316 TASK-1818; gmqtt lazy-import intact)
         "BaseBrokerHook": ".brokers.base",
         "RedisBrokerHook": ".brokers.redis",
         "RabbitMQBrokerHook": ".brokers.rabbitmq",

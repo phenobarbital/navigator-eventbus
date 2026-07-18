@@ -1,11 +1,11 @@
-"""RabbitMQ broker hook (FEAT-312, Module 6).
+"""RabbitMQ broker hook (FEAT-312 Module 6; rewired by FEAT-316 TASK-1818).
 
 Mudado desde
 ``packages/ai-parrot/src/parrot/core/hooks/brokers/rabbitmq.py``
 (ai-parrot@686aba1fe, FEAT-310) sin cambios de comportamiento. El
-lazy-import a ``navigator.brokers.rabbitmq.RabbitMQConnection`` se
-conserva TAL CUAL (spec: la fase 3 recablea los hooks de brokers a la
-capa interna).
+lazy-import ahora apunta al port interno de FEAT-316
+(``navigator_eventbus.brokers.rabbitmq.RabbitMQConnection``) — el paquete
+ya no depende del framework navigator externo para soporte de brokers.
 """
 from typing import Any
 
@@ -28,7 +28,7 @@ class RabbitMQBrokerHook(BaseBrokerHook):
         self._connection = None
 
     async def connect(self) -> None:
-        from navigator.brokers.rabbitmq import RabbitMQConnection
+        from navigator_eventbus.brokers.rabbitmq import RabbitMQConnection
         self._connection = RabbitMQConnection(credentials=self._config.credentials)
         await self._connection.connect()  # type: ignore[attr-defined]
         self.logger.info("RabbitMQ connection established")

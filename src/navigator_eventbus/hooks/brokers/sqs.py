@@ -1,9 +1,10 @@
-"""AWS SQS broker hook (FEAT-312, Module 6).
+"""AWS SQS broker hook (FEAT-312 Module 6; rewired by FEAT-316 TASK-1818).
 
 Mudado desde ``packages/ai-parrot/src/parrot/core/hooks/brokers/sqs.py``
 (ai-parrot@686aba1fe, FEAT-310) sin cambios de comportamiento. El
-lazy-import a ``navigator.brokers.sqs.SQSConnection`` se conserva TAL
-CUAL (spec: la fase 3 recablea los hooks de brokers a la capa interna).
+lazy-import ahora apunta al port interno de FEAT-316
+(``navigator_eventbus.brokers.sqs.SQSConnection``) — el paquete ya no
+depende del framework navigator externo para soporte de brokers.
 """
 from typing import Any
 
@@ -25,7 +26,7 @@ class SQSBrokerHook(BaseBrokerHook):
         self._connection = None
 
     async def connect(self) -> None:
-        from navigator.brokers.sqs import SQSConnection
+        from navigator_eventbus.brokers.sqs import SQSConnection
         self._connection = SQSConnection(credentials=self._config.credentials)
         await self._connection.connect()  # type: ignore[attr-defined]
         self.logger.info("AWS SQS connection established")

@@ -52,8 +52,25 @@ watchdog = [
 mqtt = [
     "gmqtt",
 ]
+brokers = [
+    "navigator-eventbus[redis]",
+]
+rabbitmq = [
+    "aiormq>=6.7",
+]
+sqs = [
+    "aioboto3>=12",
+]
+pickle = [
+    "cloudpickle>=3",
+]
+serializer = [
+    "cloudpickle>=3",
+    "msgpack>=1",
+    "jsonpickle>=3",
+]
 all = [
-    "navigator-eventbus[redis,grpc,notify,scheduler,watchdog,mqtt]",
+    "navigator-eventbus[redis,grpc,notify,scheduler,watchdog,mqtt,brokers,rabbitmq,sqs]",
 ]
 dev = [
     "pytest>=8.0",
