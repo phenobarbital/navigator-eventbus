@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "navigator-eventbus"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Standalone async event bus + generic hooks fabric (extracted from ai-parrot FEAT-310)"
 authors = [
     {name = "Jesus Lara", email = "jesuslara@phenobarbital.info"}

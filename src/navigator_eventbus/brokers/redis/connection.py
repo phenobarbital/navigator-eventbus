@@ -35,7 +35,7 @@ class RedisConnection(BaseConnection):
 
     def __init__(
         self,
-        credentials: Union[str, dict] = None,
+        credentials: Optional[Union[str, dict]] = None,
         timeout: Optional[int] = 5,
         **kwargs: Any,
     ) -> None:

@@ -22,7 +22,7 @@ class SQSConsumer(SQSConnection, BrokerConsumer):
 
     def __init__(
         self,
-        credentials: Union[str, dict] = None,
+        credentials: Optional[Union[str, dict]] = None,
         timeout: Optional[int] = 5,
         callback: Optional[Union[Awaitable, Callable]] = None,
         **kwargs: Any,
@@ -73,7 +73,7 @@ class SQSConsumer(SQSConnection, BrokerConsumer):
         """Subscribe to events from a specific queue in a background task."""
         await self.ensure_connection()
         try:
-            self.logger.notice(f"Starting SQS consumer for queue: {queue_name}")
+            self.logger.notice(f"Starting SQS consumer for queue: {queue_name}")  # type: ignore[attr-defined]
             self.consumer_task = asyncio.create_task(
                 self.consume_messages(
                     queue_name=queue_name,

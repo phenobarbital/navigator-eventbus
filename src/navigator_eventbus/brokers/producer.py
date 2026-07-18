@@ -47,7 +47,7 @@ class BrokerProducer(BaseConnection, ABC):
 
     def __init__(
         self,
-        credentials: Union[str, dict] = None,
+        credentials: Optional[Union[str, dict]] = None,
         queue_size: Optional[int] = None,
         num_workers: Optional[int] = 4,
         timeout: Optional[int] = 5,
@@ -55,12 +55,12 @@ class BrokerProducer(BaseConnection, ABC):
         auth_callable: Optional[Callable[[web.Request], Awaitable[Any]]] = None,
         **kwargs: Any,
     ) -> None:
-        self.queue_size = queue_size if queue_size else BROKER_MANAGER_QUEUE_SIZE
+        self.queue_size: int = queue_size if queue_size else BROKER_MANAGER_QUEUE_SIZE
         self.app: Optional[web.Application] = None
-        self.timeout: int = timeout
+        self.timeout: Optional[int] = timeout
         self.logger = logging.getLogger("Broker.Producer")
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size)
-        self._num_workers = num_workers
+        self._num_workers: int = num_workers if num_workers else 4
         self._workers: list = []
         self._broker_service: str = kwargs.get("broker_service", "rabbitmq")
         self._auth_callable = auth_callable
@@ -75,11 +75,12 @@ class BrokerProducer(BaseConnection, ABC):
         # actually propagate `self._credentials`.
         super().__init__(credentials=credentials, timeout=timeout, **kwargs)
 
-    def setup(self, app: web.Application = None) -> None:
+    def setup(self, app: Any = None) -> None:
         """Wire this producer into an aiohttp application.
 
         Same duck-typing desacople as :meth:`BaseConnection.setup`, plus
-        registration of the ``event_publisher`` HTTP endpoint.
+        registration of the ``event_publisher`` HTTP endpoint. Typed as
+        ``Any`` — see :meth:`BaseConnection.setup` for why.
 
         Raises:
             ValueError: If *app* (or ``app.get_app()``) resolves to ``None``.
@@ -97,7 +98,7 @@ class BrokerProducer(BaseConnection, ABC):
             f"/api/v1/broker/{self._broker_service}/publish_event",
             self.event_publisher,
         )
-        self.logger.notice(":: Starting Message Queue Producer ::")
+        self.logger.notice(":: Starting Message Queue Producer ::")  # type: ignore[attr-defined]
 
     async def start_workers(self) -> None:
         """Start the queue worker tasks."""

@@ -21,10 +21,16 @@ from .serializers import DataSerializer
 class BaseConnection(ABC):
     """Manages connection and operations over Broker Services."""
 
+    #: Key under which ``setup()`` registers this instance on the aiohttp
+    #: app (``app[self._name_] = self``). Concrete subclasses override this
+    #: with a specific name (e.g. ``"redis_producer"``); the base default
+    #: only exists so mypy sees a concrete attribute here.
+    _name_: str = "broker_connection"
+
     def __init__(
         self,
         *args: Any,
-        credentials: Union[str, dict] = None,
+        credentials: Optional[Union[str, dict]] = None,
         timeout: Optional[int] = 5,
         **kwargs: Any,
     ) -> None:
@@ -38,7 +44,7 @@ class BaseConnection(ABC):
                 ``super().__init__()`` for cooperative multiple inheritance.
         """
         self._credentials = credentials
-        self._timeout: int = timeout
+        self._timeout: Optional[int] = timeout
         self._connection = None
         self._monitor_task: Optional[Awaitable] = None
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -121,13 +127,15 @@ class BaseConnection(ABC):
         """``on_shutdown`` signal handler — disconnects from the broker."""
         await self.disconnect()
 
-    def setup(self, app: web.Application = None) -> None:
+    def setup(self, app: Any = None) -> None:
         """Wire this connection into an aiohttp application.
 
         Accepts either a plain ``web.Application`` or an object exposing a
         ``get_app()`` method (e.g. navigator's ``BaseApplication``) via
         duck-typing — this decouples the brokers package from the navigator
-        framework while remaining compatible with it (spec §7).
+        framework while remaining compatible with it (spec §7). Typed as
+        ``Any`` (rather than ``Optional[web.Application]``) precisely
+        because it accepts that wider, duck-typed surface.
 
         Raises:
             ValueError: If *app* (or ``app.get_app()``) resolves to ``None``.

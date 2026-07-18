@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import random
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 
 class BaseWrapper:
@@ -15,7 +15,7 @@ class BaseWrapper:
     _queued: bool = True
     _debug: bool = False
 
-    def __init__(self, coro: Optional[Any] = None, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, coro: Any = None, *args: Any, **kwargs: Any) -> None:
         """Initialize the wrapper around a coroutine function.
 
         Args:
