@@ -1,9 +1,10 @@
-"""Redis Streams broker hook (FEAT-312, Module 6).
+"""Redis Streams broker hook (FEAT-312 Module 6; rewired by FEAT-316 TASK-1818).
 
 Mudado desde ``packages/ai-parrot/src/parrot/core/hooks/brokers/redis.py``
 (ai-parrot@686aba1fe, FEAT-310) sin cambios de comportamiento. El
-lazy-import a ``navigator.brokers.redis.RedisConnection`` se conserva TAL
-CUAL (spec: la fase 3 recablea los hooks de brokers a la capa interna).
+lazy-import ahora apunta al port interno de FEAT-316
+(``navigator_eventbus.brokers.redis.RedisConnection``) — el paquete ya no
+depende del framework navigator externo para soporte de brokers.
 """
 from typing import Any
 
@@ -24,7 +25,7 @@ class RedisBrokerHook(BaseBrokerHook):
         self._connection = None
 
     async def connect(self) -> None:
-        from navigator.brokers.redis import RedisConnection
+        from navigator_eventbus.brokers.redis import RedisConnection
         self._connection = RedisConnection(credentials=self._config.credentials)
         await self._connection.connect()  # type: ignore[attr-defined]
         self.logger.info("Redis Stream connection established")

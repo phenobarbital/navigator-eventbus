@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "navigator-eventbus"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Standalone async event bus + generic hooks fabric (extracted from ai-parrot FEAT-310)"
 authors = [
     {name = "Jesus Lara", email = "jesuslara@phenobarbital.info"}
@@ -52,8 +52,25 @@ watchdog = [
 mqtt = [
     "gmqtt",
 ]
+brokers = [
+    "navigator-eventbus[redis]",
+]
+rabbitmq = [
+    "aiormq>=6.7",
+]
+sqs = [
+    "aioboto3>=12",
+]
+pickle = [
+    "cloudpickle>=3",
+]
+serializer = [
+    "cloudpickle>=3",
+    "msgpack>=1",
+    "jsonpickle>=3",
+]
 all = [
-    "navigator-eventbus[redis,grpc,notify,scheduler,watchdog,mqtt]",
+    "navigator-eventbus[redis,grpc,notify,scheduler,watchdog,mqtt,brokers,rabbitmq,sqs]",
 ]
 dev = [
     "pytest>=8.0",

@@ -1,10 +1,12 @@
-"""Broker hooks sub-package (FEAT-312, Module 6).
+"""Broker hooks sub-package (FEAT-312 Module 6; rewired by FEAT-316 TASK-1818).
 
 Mudado desde
 ``packages/ai-parrot/src/parrot/core/hooks/brokers/__init__.py``
-(ai-parrot@686aba1fe, FEAT-310). Lazy-imports to ``navigator.brokers.*``
-and ``gmqtt`` are preserved as-is — phase 3 (``eventbus-brokers-port``)
-recables them to the internal transport layer.
+(ai-parrot@686aba1fe, FEAT-310). The Redis/RabbitMQ/SQS hooks' lazy-imports
+now point at this package's own internal ``brokers`` port
+(``navigator_eventbus.brokers.*``, delivered by FEAT-316) — the external
+navigator framework is no longer a dependency for broker support. The
+``gmqtt``-based MQTT hook is unaffected (no MQTT broker exists upstream).
 """
 from navigator_eventbus.hooks.brokers.base import BaseBrokerHook
 from navigator_eventbus.hooks.brokers.mqtt import MQTTBrokerHook
