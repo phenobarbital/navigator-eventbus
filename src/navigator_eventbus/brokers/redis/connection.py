@@ -31,12 +31,21 @@ from ..wrapper import BaseWrapper
 
 
 class RedisConnection(BaseConnection):
-    """Manages connection and operations with Redis using Redis Streams."""
+    """Manages connection and operations with Redis using Redis Streams.
+
+    When ``consumer_group=True`` (default), :meth:`connect` creates the
+    consumer group and consumer automatically — the traditional behaviour.
+    When ``consumer_group=False``, the connection skips group setup and
+    exposes free-read methods (:meth:`xread`, :meth:`xrange`,
+    :meth:`xrevrange`, :meth:`xinfo_stream`) so callers can do arbitrary
+    stream reads without a dedicated ``redis.asyncio`` client.
+    """
 
     def __init__(
         self,
         credentials: Optional[Union[str, dict]] = None,
         timeout: Optional[int] = 5,
+        consumer_group: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize the Redis connection.
@@ -46,6 +55,9 @@ class RedisConnection(BaseConnection):
                 ``password``/``db``); defaults to the local
                 ``REDIS_BROKER_*`` navconfig values when omitted.
             timeout: Connection timeout, in seconds.
+            consumer_group: When ``True`` (default), create and join a
+                consumer group on connect.  When ``False``, skip group
+                setup — useful for free-read / tailer use-cases.
             **kwargs: ``group_name``/``consumer_name``/``queue_name`` and
                 anything else forwarded to :class:`BaseConnection`.
         """
@@ -60,12 +72,18 @@ class RedisConnection(BaseConnection):
         super().__init__(credentials=credentials, timeout=timeout, **kwargs)
         self._connection: Optional[aioredis.Redis] = None
         self.logger = logging.getLogger("RedisConnection")
+        self._consumer_group = consumer_group
         self._group_name = kwargs.get("group_name", "default_group")
         self._consumer_name = kwargs.get("consumer_name", "default_consumer")
         self._queue_name = kwargs.get("queue_name", "message_stream")
 
     async def connect(self) -> None:
-        """Establish the connection with Redis and ensure the group exists."""
+        """Establish the connection with Redis.
+
+        When ``consumer_group`` is enabled, the consumer group and consumer
+        are created automatically.  Otherwise only the raw connection is
+        established.
+        """
         if self._connection:
             return
         try:
@@ -73,8 +91,8 @@ class RedisConnection(BaseConnection):
             self._connection = aioredis.Redis(
                 **self._credentials, decode_responses=True, encoding="utf-8"
             )
-            # Ensure that the group exists
-            await self.ensure_group_exists()
+            if self._consumer_group:
+                await self.ensure_group_exists()
             self.logger.info("Connected to Redis.")
         except Exception as e:
             self.logger.error(f"Failed to connect to Redis: {e}")
@@ -220,7 +238,16 @@ class RedisConnection(BaseConnection):
         block: int = 1000,
         **kwargs: Any,
     ) -> None:
-        """Consume messages from the specified Redis Stream via the callback."""
+        """Consume messages from the specified Redis Stream via the callback.
+
+        Raises:
+            RuntimeError: If called when ``consumer_group=False``.
+        """
+        if not self._consumer_group:
+            raise RuntimeError(
+                "consume_messages() requires consumer_group=True. "
+                "Use xread()/xrange()/xrevrange() for free reads."
+            )
         stream = queue_name or self._queue_name
         consumer_name = kwargs.get("consumer_name", self._consumer_name)
         try:
@@ -328,3 +355,109 @@ class RedisConnection(BaseConnection):
             else:
                 callback(message_id, body)
         return len(claimed_messages)
+
+    # ------------------------------------------------------------------
+    # Free-read API (no consumer group required)
+    # ------------------------------------------------------------------
+
+    async def xread(
+        self,
+        streams: Dict[str, str],
+        count: Optional[int] = 100,
+        block: Optional[int] = None,
+    ) -> list:
+        """Read messages from one or more streams without a consumer group.
+
+        Args:
+            streams: Mapping of ``{stream_name: last_id}``; use ``"0-0"``
+                to read from the beginning or ``"$"`` for only new messages.
+            count: Maximum number of entries to return per stream.
+            block: If set, block for up to this many milliseconds waiting
+                for new data (``None`` = non-blocking).
+
+        Returns:
+            A list of ``(stream, [(message_id, data), ...])`` tuples, as
+            returned by the underlying ``XREAD`` command.
+        """
+        await self.ensure_connection()
+        return await self._connection.xread(
+            streams=streams, count=count, block=block
+        ) or []
+
+    async def xrange(
+        self,
+        stream: Optional[str] = None,
+        start: str = "-",
+        end: str = "+",
+        count: Optional[int] = None,
+    ) -> list:
+        """Read a range of messages from a stream (oldest to newest).
+
+        Args:
+            stream: Stream name; defaults to ``self._queue_name``.
+            start: Minimum message ID (inclusive); ``"-"`` = beginning.
+            end: Maximum message ID (inclusive); ``"+"`` = end.
+            count: Limit the number of returned entries.
+
+        Returns:
+            A list of ``(message_id, data)`` tuples.
+        """
+        await self.ensure_connection()
+        stream = stream or self._queue_name
+        return await self._connection.xrange(
+            stream, min=start, max=end, count=count
+        )
+
+    async def xrevrange(
+        self,
+        stream: Optional[str] = None,
+        start: str = "+",
+        end: str = "-",
+        count: Optional[int] = None,
+    ) -> list:
+        """Read a range of messages from a stream (newest to oldest).
+
+        Args:
+            stream: Stream name; defaults to ``self._queue_name``.
+            start: Maximum message ID (inclusive); ``"+"`` = end.
+            end: Minimum message ID (inclusive); ``"-"`` = beginning.
+            count: Limit the number of returned entries.
+
+        Returns:
+            A list of ``(message_id, data)`` tuples in reverse order.
+        """
+        await self.ensure_connection()
+        stream = stream or self._queue_name
+        return await self._connection.xrevrange(
+            stream, max=start, min=end, count=count
+        )
+
+    async def xinfo_stream(
+        self,
+        stream: Optional[str] = None,
+    ) -> dict:
+        """Return metadata about a stream (length, first/last entry, etc.).
+
+        Args:
+            stream: Stream name; defaults to ``self._queue_name``.
+
+        Returns:
+            A dict with keys like ``length``, ``first-entry``,
+            ``last-entry``, ``groups``, etc.
+        """
+        await self.ensure_connection()
+        stream = stream or self._queue_name
+        return await self._connection.xinfo_stream(stream)
+
+    async def xlen(
+        self,
+        stream: Optional[str] = None,
+    ) -> int:
+        """Return the number of entries in a stream.
+
+        Args:
+            stream: Stream name; defaults to ``self._queue_name``.
+        """
+        await self.ensure_connection()
+        stream = stream or self._queue_name
+        return await self._connection.xlen(stream)
