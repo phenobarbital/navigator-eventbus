@@ -19,8 +19,15 @@ from navigator_eventbus.dlq import DLQHandler
 from navigator_eventbus.envelope import EventEnvelope, Severity
 from navigator_eventbus.evb import Event, EventBus, EventPriority, EventSubscription
 from navigator_eventbus.ingress_models import IngressEnvelope
-
-__version__ = "0.1.0"
+from navigator_eventbus.version import (
+    __author__,
+    __author_email__,
+    __copyright__,
+    __description__,
+    __license__,
+    __title__,
+    __version__,
+)
 
 __all__ = [
     "__version__",

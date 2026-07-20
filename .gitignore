@@ -223,3 +223,6 @@ __marimo__/
 # SDD artifacts
 artifacts/
 .autopilot/
+etc/navigator.ini
+uv.lock
+templates/.compiled

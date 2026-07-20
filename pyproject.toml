@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "navigator-eventbus"
-version = "0.1.0rc1"
+dynamic = ["version"]
 description = "Standalone async event bus + generic hooks fabric (extracted from ai-parrot FEAT-310)"
 authors = [
     {name = "Jesus Lara", email = "jesuslara@phenobarbital.info"}
@@ -88,6 +88,11 @@ Tracker = "https://github.com/phenobarbital/navigator-eventbus/issues"
 # ---------------------------------------------------------------------------
 # Hatchling — src/ layout
 # ---------------------------------------------------------------------------
+# Single source of truth for the version — read from the version.py metadata
+# module (mirrors ai-parrot's `parrot.version.__version__` pattern).
+[tool.hatch.version]
+path = "src/navigator_eventbus/version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/navigator_eventbus"]
 

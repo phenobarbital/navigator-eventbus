@@ -7,9 +7,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+    # Pure-Python package (py3-none-any wheel, no compiled extensions) — a
+    # single build produces the one wheel + sdist that serve every Python
+    # version, so there is no need to matrix over interpreters here.
     steps:
       - uses: actions/checkout@v4
 
@@ -21,19 +21,30 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          uv pip install --system twine
+          python-version: "3.11"
 
       - name: Build sdist and wheel
         run: uv build
 
+      # Guard: the version that gets published comes entirely from
+      # src/navigator_eventbus/version.py (via [tool.hatch.version]), NOT from
+      # the git tag. Fail fast if a release tag was cut without bumping
+      # version.py, instead of silently building/publishing the wrong version.
+      - name: Verify release tag matches built version
+        if: github.event_name == 'release'
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          BUILT="$(basename "$(ls dist/*.whl)" | cut -d- -f2)"
+          echo "Release tag: ${TAG}   Built version: ${BUILT}"
+          if [ "$TAG" != "$BUILT" ]; then
+            echo "::error::Release tag ('${TAG}') != built version ('${BUILT}'). Bump src/navigator_eventbus/version.py to match the tag before releasing."
+            exit 1
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist-py${{ matrix.python-version }}
+          name: dist
           path: dist/*
 
   deploy:
@@ -51,12 +62,11 @@ jobs:
         with:
           version: "latest"
 
-      - name: Download all artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: dist-*
+          name: dist
           path: dist
-          merge-multiple: true
 
       - name: List files in dist
         run: ls -l dist
@@ -64,4 +74,4 @@ jobs:
       - name: Publish to PyPI
         run: |
           uv tool install twine
-          uv tool run twine upload dist/* --username __token__ --password ${{ secrets.EVENTBUS_PYPI_API_TOKEN }}
+          uv tool run twine upload dist/* --skip-existing --username __token__ --password ${{ secrets.EVENTBUS_PYPI_API_TOKEN }}
