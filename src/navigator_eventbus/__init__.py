@@ -16,7 +16,12 @@ subscribers, etc.), independent of the bus core above. See
 from navigator_eventbus import lifecycle
 from navigator_eventbus.core import BackpressureError, BusClosedError, BusCore
 from navigator_eventbus.dlq import DLQHandler
-from navigator_eventbus.envelope import EventEnvelope, Severity
+from navigator_eventbus.envelope import (
+    ENVELOPE_SCHEMA_VERSION,
+    EventEnvelope,
+    Severity,
+    UnsupportedSchemaVersion,
+)
 from navigator_eventbus.evb import Event, EventBus, EventPriority, EventSubscription
 from navigator_eventbus.ingress_models import IngressEnvelope
 from navigator_eventbus.version import (
@@ -35,6 +40,7 @@ __all__ = [
     "BusClosedError",
     "BusCore",
     "DLQHandler",
+    "ENVELOPE_SCHEMA_VERSION",
     "Event",
     "EventBus",
     "EventEnvelope",
@@ -42,5 +48,6 @@ __all__ = [
     "EventSubscription",
     "IngressEnvelope",
     "Severity",
+    "UnsupportedSchemaVersion",
     "lifecycle",
 ]

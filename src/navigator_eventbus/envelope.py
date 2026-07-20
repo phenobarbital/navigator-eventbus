@@ -20,6 +20,24 @@ from typing import Any, Optional
 
 from navigator_eventbus.evb import EventPriority
 
+ENVELOPE_SCHEMA_VERSION: int = 1
+"""Current wire schema version for :class:`EventEnvelope`.
+
+Bump this constant (and add explicit migration handling in
+:meth:`EventEnvelope.from_dict`) whenever the envelope's wire shape changes
+in a way that requires reader awareness.
+"""
+
+
+class UnsupportedSchemaVersion(ValueError):
+    """Raised by :meth:`EventEnvelope.from_dict` for an unknown schema version.
+
+    Deserialization is lenient backwards (a missing ``schema_version`` key
+    is treated as legacy version ``1``) and strict forwards (a version
+    greater than :data:`ENVELOPE_SCHEMA_VERSION` raises this exception,
+    never silently downgrades).
+    """
+
 
 class Severity(IntEnum):
     """Log-level severity of an event — orthogonal to ``EventPriority``.
@@ -57,6 +75,9 @@ class EventEnvelope:
         correlation_id: Optional chain-tracking identifier.
         trace_context: Optional dict form of a lifecycle ``TraceContext``.
         metadata: Free-form JSON-safe metadata.
+        schema_version: Wire schema version (default
+            :data:`ENVELOPE_SCHEMA_VERSION`). MUST stay the last field for
+            positional-argument compatibility.
     """
 
     topic: str
@@ -71,6 +92,7 @@ class EventEnvelope:
     correlation_id: Optional[str] = None
     trace_context: Optional[dict] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    schema_version: int = ENVELOPE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         """Validate the timestamp is present and timezone-aware.
@@ -112,11 +134,17 @@ class EventEnvelope:
             "correlation_id": self.correlation_id,
             "trace_context": self.trace_context,
             "metadata": self.metadata,
+            "schema_version": self.schema_version,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EventEnvelope":
         """Deserialize an envelope produced by :meth:`to_dict`.
+
+        Version tolerance is lenient backwards and strict forwards: a
+        missing ``schema_version`` key is treated as legacy version ``1``;
+        a version greater than :data:`ENVELOPE_SCHEMA_VERSION` raises
+        :class:`UnsupportedSchemaVersion` (never silently downgraded).
 
         Args:
             data: Dict with at least ``topic``, ``payload`` and an
@@ -128,7 +156,17 @@ class EventEnvelope:
         Raises:
             ValueError: If the parsed timestamp is naive.
             KeyError: If required keys are missing.
+            UnsupportedSchemaVersion: If ``schema_version`` is greater than
+                :data:`ENVELOPE_SCHEMA_VERSION`.
         """
+        schema_version = data.get("schema_version", 1)
+        if schema_version > ENVELOPE_SCHEMA_VERSION:
+            raise UnsupportedSchemaVersion(
+                f"Unsupported envelope schema_version {schema_version} "
+                f"(supported <= {ENVELOPE_SCHEMA_VERSION}) for "
+                f"topic={data.get('topic')!r} "
+                f"event_id={data.get('event_id')!r}"
+            )
         return cls(
             topic=data["topic"],
             payload=data.get("payload", {}),
@@ -142,4 +180,5 @@ class EventEnvelope:
             correlation_id=data.get("correlation_id"),
             trace_context=data.get("trace_context"),
             metadata=data.get("metadata", {}),
+            schema_version=schema_version,
         )
