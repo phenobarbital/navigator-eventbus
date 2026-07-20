@@ -298,6 +298,36 @@ async def test_streams_event_id_dedup(fake_redis):
     await backend.close()
 
 
+async def test_streams_roundtrip_with_version(fake_redis):
+    """FEAT-319 M1: legacy (version-less) and v1 messages coexist in one
+    stream and both are consumable via ``from_dict``."""
+    backend = make_backend(fake_redis)
+    received: list[EventEnvelope] = []
+
+    async def consumer(envelope):
+        received.append(envelope)
+
+    # Legacy entry: wire dict with no "schema_version" key at all —
+    # simulates a message produced before this spec landed.
+    legacy_env = make_envelope("app.legacy")
+    legacy_wire = legacy_env.to_dict()
+    del legacy_wire["schema_version"]
+    await fake_redis.xadd(
+        "evb:stream:app", {"envelope": json.dumps(legacy_wire)}
+    )
+
+    # v1 entry via the normal publish path.
+    v1_env = make_envelope("app.v1")
+    await backend.publish(v1_env)
+
+    await backend.start_consumer(consumer)
+    await wait_until(lambda: len(received) == 2)
+    by_topic = {env.topic: env for env in received}
+    assert by_topic["app.legacy"].schema_version == 1
+    assert by_topic["app.v1"].schema_version == 1
+    await backend.close()
+
+
 async def test_streams_failure_keeps_pending_and_unmarked(fake_redis):
     backend = make_backend(fake_redis, autoclaim_interval=999)  # sweeper idle
     calls: list[str] = []

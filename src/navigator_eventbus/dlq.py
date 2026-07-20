@@ -309,7 +309,13 @@ class DLQHandler:
 
     @staticmethod
     def _row_to_envelope(row: dict[str, Any]) -> EventEnvelope:
-        """Rebuild an :class:`EventEnvelope` from a DLQ row."""
+        """Rebuild an :class:`EventEnvelope` from a DLQ row.
+
+        DLQ rows are manually constructed (not via :meth:`EventEnvelope.from_dict`),
+        so the same version-tolerance rule is applied here explicitly: a row
+        without a ``schema_version`` key (pre-M1 rows; the ``evb_dlq`` table
+        has no such column) reconstructs as legacy version ``1``.
+        """
         def _json(value: Any) -> Any:
             return json.loads(value) if isinstance(value, str) else value
 
@@ -331,4 +337,5 @@ class DLQHandler:
             correlation_id=row.get("correlation_id"),
             trace_context=_json(row.get("trace_context")),
             metadata=_json(row.get("metadata")) or {},
+            schema_version=row.get("schema_version", 1),
         )

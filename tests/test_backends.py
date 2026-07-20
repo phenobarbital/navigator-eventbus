@@ -189,6 +189,46 @@ async def test_pubsub_wire_roundtrip():
     await backend.close()
 
 
+async def test_pubsub_roundtrip_with_version():
+    """FEAT-319 M1: legacy (version-less) and v1 messages both consumable
+    over the Redis Pub/Sub backend."""
+    legacy_env = make_envelope("legacy.topic")
+    legacy_wire = legacy_env.to_dict()
+    del legacy_wire["schema_version"]
+
+    v1_env = make_envelope("v1.topic")
+    v1_wire = v1_env.to_dict()
+
+    incoming = [
+        {
+            "type": "pmessage",
+            "pattern": "evb:events:*",
+            "channel": f"evb:events:{legacy_env.topic}",
+            "data": json.dumps(legacy_wire),
+        },
+        {
+            "type": "pmessage",
+            "pattern": "evb:events:*",
+            "channel": f"evb:events:{v1_env.topic}",
+            "data": json.dumps(v1_wire),
+        },
+    ]
+    fake = FakeRedis(incoming=incoming)
+    backend = RedisPubSubBackend(client=fake)
+
+    received: list[EventEnvelope] = []
+
+    async def consumer(envelope):
+        received.append(envelope)
+
+    await backend.start_consumer(consumer)
+    await wait_until(lambda: len(received) == 2)
+    by_topic = {env.topic: env for env in received}
+    assert by_topic["legacy.topic"].schema_version == 1
+    assert by_topic["v1.topic"].schema_version == 1
+    await backend.close()
+
+
 async def test_pubsub_reconnect_backoff():
     env = make_envelope("reconnect.topic")
     wire = {
