@@ -39,3 +39,22 @@ RABBITMQ_VHOST: str = config.get("RABBITMQ_VHOST", fallback="navigator")
 rabbitmq_dsn: str = (
     f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT}/{RABBITMQ_VHOST}"
 )
+
+# ---------------------------------------------------------------------------
+# MQTT bridge / downlink (EmployeeEventsBridge, MQTTDownlinkPublisher)
+# ---------------------------------------------------------------------------
+CACHE_URL: str = config.get("CACHE_URL", fallback="redis://localhost:6379/0")
+MQTT_EVENT_DEDUP_TTL: int = config.getint("MQTT_EVENT_DEDUP_TTL", fallback=600)
+MQTT_EVENT_DEDUP_REDIS_URL: str = config.get(
+    "MQTT_EVENT_DEDUP_REDIS_URL", fallback=CACHE_URL
+)
+MQTT_ACCEPTED_SCHEMA_VERSIONS: set = set(
+    map(int, config.get("MQTT_ACCEPTED_SCHEMA_VERSIONS", fallback="1").split(","))
+)
+MQTT_MAX_BATCH_SIZE: int = config.getint("MQTT_MAX_BATCH_SIZE", fallback=200)
+MQTT_ENFORCE_EMPLOYEE_ID_CONSISTENCY: bool = config.getboolean(
+    "MQTT_ENFORCE_EMPLOYEE_ID_CONSISTENCY", fallback=True
+)
+EMPLOYEE_EVENTS_EXCHANGE: str = config.get(
+    "EMPLOYEE_EVENTS_EXCHANGE", fallback="employee.events"
+)
