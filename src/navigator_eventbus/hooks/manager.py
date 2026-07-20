@@ -29,35 +29,58 @@ class HookManager:
     event is forwarded to both the direct callback *and* the bus on
     channel ``hooks.<hook_type>.<event_type>``.
 
-    ``route_to_bus`` mode (default OFF): when enabled and a bus is
-    attached, hook events are published as first-class
-    ``hooks.<hook_type>.<event_type>`` envelopes through the facade —
-    hook ``payload`` as the envelope payload, ``hook_id`` as the source,
-    routing hints carried in metadata, and severity mapped from the event
-    metadata (default INFO). The direct callback is KEPT untouched in
-    both modes (permanent low-latency path).
+    ``route_to_bus`` mode (tri-state, default ``None``/auto): when the
+    *effective* routing decision (see :meth:`_effective_route_to_bus`) is
+    ``True`` and a bus is attached, hook events are published as
+    first-class ``hooks.<hook_type>.<event_type>`` envelopes through the
+    facade — hook ``payload`` as the envelope payload, ``hook_id`` as the
+    source, routing hints carried in metadata, and severity mapped from
+    the event metadata (default INFO). The direct callback is KEPT
+    untouched in both modes (permanent low-latency path).
 
     Args:
-        route_to_bus: Enable first-class bus routing. Default ``False``
-            — behavior identical to the legacy dual-emit.
+        route_to_bus: ``None`` (default) auto-routes iff a bus is
+            attached via :meth:`set_event_bus`; explicit ``True``/``False``
+            always win regardless of bus attachment.
     """
 
-    def __init__(self, *, route_to_bus: bool = False) -> None:
+    def __init__(self, *, route_to_bus: Optional[bool] = None) -> None:
         self._hooks: Dict[str, BaseHook] = {}
         self._callback: Optional[Callable] = None
         self._event_bus: Optional["EventBus"] = None
         self._route_to_bus = route_to_bus
+        self._auto_activation_logged = False
         self.logger = logging.getLogger("navigator_eventbus.hooks.manager")
+
+    def _effective_route_to_bus(self) -> bool:
+        """Resolve the effective bus-routing decision.
+
+        Returns:
+            ``self._route_to_bus`` if explicitly set (``True``/``False``);
+            otherwise ``True`` iff a bus is currently attached (auto mode).
+        """
+        if self._route_to_bus is not None:
+            return self._route_to_bus
+        return self._event_bus is not None
 
     @property
     def route_to_bus(self) -> bool:
-        """Whether first-class bus routing is enabled."""
-        return self._route_to_bus
+        """Whether first-class bus routing is effectively enabled.
+
+        Returns the *effective* value (see :meth:`_effective_route_to_bus`),
+        not the raw tri-state flag.
+        """
+        return self._effective_route_to_bus()
 
     @route_to_bus.setter
-    def route_to_bus(self, enabled: bool) -> None:
-        """Toggle first-class bus routing and re-inject hook callbacks."""
-        self._route_to_bus = bool(enabled)
+    def route_to_bus(self, enabled: Optional[bool]) -> None:
+        """Toggle bus routing and re-inject hook callbacks.
+
+        Args:
+            enabled: ``None`` restores auto mode; ``True``/``False`` set
+                an explicit override.
+        """
+        self._route_to_bus = enabled
         dispatch = self._build_dispatch()
         for hook in self._hooks.values():
             hook.set_callback(dispatch)  # type: ignore[arg-type]
@@ -84,10 +107,20 @@ class HookManager:
             bus: A :class:`~navigator_eventbus.evb.EventBus` instance.
         """
         self._event_bus = bus
+        # Reset the auto-activation once-flag on every (re-)attachment, so
+        # a detach/replace makes the next auto-activation log again.
+        self._auto_activation_logged = False
         dispatch = self._build_dispatch()
         for hook in self._hooks.values():
             hook.set_callback(dispatch)  # type: ignore[arg-type]
         self.logger.info("HookManager: EventBus attached — dual-emit enabled")
+        if (
+            self._route_to_bus is None
+            and self._event_bus is not None
+            and not self._auto_activation_logged
+        ):
+            self.logger.info("route_to_bus auto-enabled: bus attached")
+            self._auto_activation_logged = True
 
     def _build_dispatch(self) -> Optional[Callable]:
         """Return the effective per-hook callback.
@@ -142,7 +175,7 @@ class HookManager:
         """
         topic = f"hooks.{event.hook_type}.{event.event_type}"
         try:
-            if not self._route_to_bus:
+            if not self._effective_route_to_bus():
                 # Legacy dual-emit — byte-identical to the pre-FEAT-312 path.
                 await bus.emit(topic, event.model_dump())
                 return
