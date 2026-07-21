@@ -39,6 +39,34 @@ def test_from_dict_unknown_version_raises(legacy_envelope_dict):
         EventEnvelope.from_dict(data)
 
 
+def test_from_dict_non_int_version_raises_cleanly(legacy_envelope_dict):
+    """A loosely-typed source (e.g. JSON/JSONB) sending schema_version as a
+    string must raise UnsupportedSchemaVersion, not a raw TypeError from
+    the ``>`` comparison."""
+    data = {**legacy_envelope_dict, "schema_version": "2"}
+    with pytest.raises(UnsupportedSchemaVersion, match="order.created"):
+        EventEnvelope.from_dict(data)
+
+
+def test_from_dict_negative_version_raises(legacy_envelope_dict):
+    data = {**legacy_envelope_dict, "schema_version": -1}
+    with pytest.raises(UnsupportedSchemaVersion):
+        EventEnvelope.from_dict(data)
+
+
+def test_from_dict_zero_version_raises(legacy_envelope_dict):
+    data = {**legacy_envelope_dict, "schema_version": 0}
+    with pytest.raises(UnsupportedSchemaVersion):
+        EventEnvelope.from_dict(data)
+
+
+def test_from_dict_bool_version_raises(legacy_envelope_dict):
+    """``bool`` is a Python ``int`` subtype but never a valid version."""
+    data = {**legacy_envelope_dict, "schema_version": True}
+    with pytest.raises(UnsupportedSchemaVersion):
+        EventEnvelope.from_dict(data)
+
+
 def test_frozen_slots_preserved_after_field_add():
     env = EventEnvelope(topic="t", payload={})
     with pytest.raises(Exception):  # FrozenInstanceError

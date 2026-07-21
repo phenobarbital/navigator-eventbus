@@ -33,7 +33,11 @@ from navconfig import config as nav_config
 from navconfig.logging import logging
 
 from navigator_eventbus.core import BusCore
-from navigator_eventbus.envelope import EventEnvelope, Severity
+from navigator_eventbus.envelope import (
+    EventEnvelope,
+    Severity,
+    _validate_schema_version,
+)
 from navigator_eventbus.evb import EventPriority
 
 #: Fully-qualified, schema-qualified DLQ table.
@@ -41,6 +45,10 @@ DLQ_TABLE = "navigator.evb_dlq"
 
 #: Append-only DDL. No TTL column — rows are permanent until replayed or
 #: cleaned manually (consistent with append-only audit semantics).
+#: ``schema_version`` (FEAT-319 M1) is written on persist and read back on
+#: replay — ``ADD COLUMN IF NOT EXISTS`` below retrofits tables created
+#: before this column existed (``CREATE TABLE IF NOT EXISTS`` alone would
+#: not touch an already-existing table).
 DLQ_DDL = f"""
 CREATE SCHEMA IF NOT EXISTS navigator;
 CREATE TABLE IF NOT EXISTS {DLQ_TABLE} (
@@ -53,19 +61,21 @@ CREATE TABLE IF NOT EXISTS {DLQ_TABLE} (
     correlation_id TEXT,
     trace_context  JSONB,
     metadata       JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+    schema_version INTEGER NOT NULL DEFAULT 1,
     failure_reason TEXT,
     attempts       INTEGER NOT NULL DEFAULT 0,
     replayed_at    TIMESTAMPTZ,
     failed_at      TIMESTAMPTZ NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE {DLQ_TABLE} ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1;
 """
 
 _INSERT_SQL = f"""
 INSERT INTO {DLQ_TABLE}
     (event_id, topic, payload, severity, priority, source, correlation_id,
-     trace_context, metadata, failure_reason, attempts, failed_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     trace_context, metadata, schema_version, failure_reason, attempts, failed_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (event_id) DO NOTHING
 """
 
@@ -238,6 +248,7 @@ class DLQHandler:
                     if envelope.trace_context is not None
                     else None,
                     json.dumps(envelope.metadata),
+                    envelope.schema_version,
                     f"{failure['error_type']}: {failure['error_message']}",
                     failure["attempts"],
                     datetime.now(timezone.utc),
@@ -278,7 +289,12 @@ class DLQHandler:
                 ``failed_at >= since``.
 
         Returns:
-            Number of envelopes re-published (each marked replayed).
+            Number of envelopes re-published (each marked replayed). Rows
+            that fail to reconstruct or publish (e.g. a stored
+            ``schema_version`` newer than this reader supports, see
+            :meth:`_row_to_envelope`) are logged and SKIPPED — left
+            un-replayed for a future retry — rather than aborting the
+            whole batch or being silently downgraded.
 
         Raises:
             ValueError: If neither/both selectors are provided, or no DSN
@@ -301,9 +317,20 @@ class DLQHandler:
             rows = result or []
             replayed = 0
             for row in rows:
-                envelope = self._row_to_envelope(dict(row))
-                await self._bus.publish(envelope)
-                await conn.execute(_MARK_REPLAYED_SQL, envelope.event_id)
+                row = dict(row)
+                try:
+                    envelope = self._row_to_envelope(row)
+                    await self._bus.publish(envelope)
+                    await conn.execute(_MARK_REPLAYED_SQL, envelope.event_id)
+                except Exception as exc:  # noqa: BLE001 — isolate per-row
+                    # Never let one bad row (e.g. UnsupportedSchemaVersion)
+                    # abort the rest of the batch; leave it un-replayed.
+                    self.logger.warning(
+                        "DLQ replay skipped row event_id=%r: %s",
+                        row.get("event_id"),
+                        exc,
+                    )
+                    continue
                 replayed += 1
         return replayed
 
@@ -313,11 +340,27 @@ class DLQHandler:
 
         DLQ rows are manually constructed (not via :meth:`EventEnvelope.from_dict`),
         so the same version-tolerance rule is applied here explicitly: a row
-        without a ``schema_version`` key (pre-M1 rows; the ``evb_dlq`` table
-        has no such column) reconstructs as legacy version ``1``.
+        without a ``schema_version`` key (pre-M1 rows persisted before the
+        column existed) reconstructs as legacy version ``1``. Rows WITH the
+        column (post-M1 persistence, see ``_persist``) carry the envelope's
+        real version through unchanged — lenient backwards, strict forwards:
+        a stored version greater than :data:`ENVELOPE_SCHEMA_VERSION` raises
+        :class:`UnsupportedSchemaVersion` rather than silently downgrading
+        to ``1`` (see :meth:`replay` for per-row isolation of this case).
+
+        Raises:
+            UnsupportedSchemaVersion: If the row's ``schema_version`` is
+                greater than :data:`ENVELOPE_SCHEMA_VERSION`.
         """
         def _json(value: Any) -> Any:
             return json.loads(value) if isinstance(value, str) else value
+
+        schema_version = row.get("schema_version")
+        if schema_version is None:
+            schema_version = 1
+        schema_version = _validate_schema_version(
+            schema_version, topic=row.get("topic"), event_id=row.get("event_id")
+        )
 
         failed_at = row["failed_at"]
         if isinstance(failed_at, str):
@@ -337,5 +380,5 @@ class DLQHandler:
             correlation_id=row.get("correlation_id"),
             trace_context=_json(row.get("trace_context")),
             metadata=_json(row.get("metadata")) or {},
-            schema_version=row.get("schema_version", 1),
+            schema_version=schema_version,
         )

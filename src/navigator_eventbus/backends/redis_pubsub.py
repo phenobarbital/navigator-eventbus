@@ -25,7 +25,7 @@ import redis.asyncio as aioredis
 from navconfig.logging import logging
 
 from navigator_eventbus.backends.base import OnEnvelope
-from navigator_eventbus.envelope import EventEnvelope
+from navigator_eventbus.envelope import EventEnvelope, UnsupportedSchemaVersion
 
 #: Default Redis channel prefix (FEAT-312: neutral default, override via
 #: the ``channel_prefix`` constructor kwarg — mirrors
@@ -186,6 +186,16 @@ class RedisPubSubBackend:
         """Decode one wire message and hand it to the consumer callback."""
         try:
             envelope = EventEnvelope.from_dict(json.loads(message["data"]))
+        except UnsupportedSchemaVersion as exc:
+            # Distinct from a truly malformed message: well-formed but a
+            # schema_version newer than this reader supports (rolling-
+            # upgrade skew — see spec Known Risks). Logged distinctly so
+            # operators can tell version skew apart from poison data.
+            self.logger.error(
+                "Unsupported schema_version on pub/sub message dropped "
+                "(rolling-upgrade skew?): %s", exc,
+            )
+            return
         except Exception as exc:  # noqa: BLE001 — poison messages isolated
             self.logger.error("Undecodable pub/sub message dropped: %s", exc)
             return

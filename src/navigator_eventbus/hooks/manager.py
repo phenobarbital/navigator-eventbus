@@ -107,8 +107,10 @@ class HookManager:
             bus: A :class:`~navigator_eventbus.evb.EventBus` instance.
         """
         self._event_bus = bus
-        # Reset the auto-activation once-flag on every (re-)attachment, so
-        # a detach/replace makes the next auto-activation log again.
+        # Reset the auto-activation once-flag on every call — including a
+        # replace (there is currently no explicit "detach" method; calling
+        # this again with a different bus is the only way the attachment
+        # changes) — so the next auto-activation logs again.
         self._auto_activation_logged = False
         dispatch = self._build_dispatch()
         for hook in self._hooks.values():

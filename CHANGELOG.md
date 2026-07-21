@@ -18,13 +18,28 @@ scope: envelope schema versioning and default-capable hooks routing.
   - Deserialization is lenient backwards (a missing `schema_version` key
     is treated as legacy version `1`) and strict forwards (`from_dict`
     raises `UnsupportedSchemaVersion` for a version greater than
-    `ENVELOPE_SCHEMA_VERSION`, never silently downgrades).
-  - The same legacy→1 tolerance applies to DLQ Postgres row replay
-    (`DLQHandler._row_to_envelope`), the `IngressEnvelope` boundary model
-    (`schema_version` field added — required so post-0.1.0 clients
-    sending the key are not rejected by `extra="forbid"`), and all three
-    in-process converters (`from_legacy_event`, `from_lifecycle_dict`,
-    `from_hook_event`), which emit `schema_version=1`.
+    `ENVELOPE_SCHEMA_VERSION`, never silently downgrades). Non-int and
+    out-of-range (`< 1`) values also raise `UnsupportedSchemaVersion`
+    cleanly rather than a raw `TypeError`.
+  - `evb_dlq` (Postgres DLQ table) gained a `schema_version` column
+    (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so existing deployments
+    are retrofitted automatically on the next `ensure_table()` call) — the
+    envelope's real version is now persisted on write and read back
+    unchanged on replay, with the same legacy→1 tolerance for rows
+    persisted before this column existed. `DLQHandler.replay()` isolates
+    per-row failures (e.g. a stored version this reader doesn't support):
+    the offending row is logged and left un-replayed rather than aborting
+    the whole batch or being silently downgraded.
+  - The `IngressEnvelope` boundary model gained a `schema_version` field
+    (shape validation only) — required so post-0.1.0 clients sending the
+    key are not rejected by `extra="forbid"`; all three in-process
+    converters (`from_legacy_event`, `from_lifecycle_dict`,
+    `from_hook_event`) emit `schema_version=1`.
+  - `redis_streams`/`redis_pubsub` backends log `UnsupportedSchemaVersion`
+    distinctly from generic undecodable-message drops (both still
+    drop+ACK the entry — there is no DLQ hook at the backend layer — but
+    operators can now tell rolling-upgrade version skew apart from
+    corrupt/poison data in the logs).
 
 ### Changed
 
@@ -44,8 +59,9 @@ scope: envelope schema versioning and default-capable hooks routing.
     replaces the callback).
   - A one-time `INFO` log fires on the first auto-activation per bus
     attachment (`"route_to_bus auto-enabled: bus attached"`); the flag
-    resets on `set_event_bus` (detach/replace), so re-attachment logs
-    again.
+    resets on every `set_event_bus` call (there is no separate "detach"
+    method — calling it again with a new bus is a replace), so
+    re-attachment logs again.
 
 ### Notes
 

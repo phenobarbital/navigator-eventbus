@@ -39,6 +39,53 @@ class UnsupportedSchemaVersion(ValueError):
     """
 
 
+def _validate_schema_version(
+    schema_version: Any, *, topic: Any = None, event_id: Any = None
+) -> int:
+    """Validate a deserialized ``schema_version`` value.
+
+    Enforces the wire contract for any envelope reconstructed from
+    external data (JSON, Postgres rows, etc.): must be a plain ``int``
+    (``bool`` rejected — it is a Python ``int`` subtype but never a valid
+    version), ``>= 1``, and ``<= ENVELOPE_SCHEMA_VERSION`` (lenient
+    backwards is handled by the caller defaulting a missing key to ``1``
+    before calling this; this function only validates what IS present).
+
+    Shared by :meth:`EventEnvelope.from_dict` and
+    ``DLQHandler._row_to_envelope`` so the same tolerance rule applies
+    identically everywhere an envelope is rebuilt from stored/wire data.
+
+    Args:
+        schema_version: The candidate value (already defaulted to ``1``
+            by the caller if the source lacked the key).
+        topic: Original topic, for the error message (triage context).
+        event_id: Original event_id, for the error message.
+
+    Returns:
+        The validated ``schema_version``, unchanged.
+
+    Raises:
+        UnsupportedSchemaVersion: If the value is not an ``int >= 1``, or
+            is greater than :data:`ENVELOPE_SCHEMA_VERSION`.
+    """
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version < 1
+    ):
+        raise UnsupportedSchemaVersion(
+            f"Invalid envelope schema_version {schema_version!r} (must be "
+            f"an int >= 1) for topic={topic!r} event_id={event_id!r}"
+        )
+    if schema_version > ENVELOPE_SCHEMA_VERSION:
+        raise UnsupportedSchemaVersion(
+            f"Unsupported envelope schema_version {schema_version} "
+            f"(supported <= {ENVELOPE_SCHEMA_VERSION}) for "
+            f"topic={topic!r} event_id={event_id!r}"
+        )
+    return schema_version
+
+
 class Severity(IntEnum):
     """Log-level severity of an event — orthogonal to ``EventPriority``.
 
@@ -156,17 +203,15 @@ class EventEnvelope:
         Raises:
             ValueError: If the parsed timestamp is naive.
             KeyError: If required keys are missing.
-            UnsupportedSchemaVersion: If ``schema_version`` is greater than
+            UnsupportedSchemaVersion: If ``schema_version`` is not an
+                ``int >= 1``, or is greater than
                 :data:`ENVELOPE_SCHEMA_VERSION`.
         """
-        schema_version = data.get("schema_version", 1)
-        if schema_version > ENVELOPE_SCHEMA_VERSION:
-            raise UnsupportedSchemaVersion(
-                f"Unsupported envelope schema_version {schema_version} "
-                f"(supported <= {ENVELOPE_SCHEMA_VERSION}) for "
-                f"topic={data.get('topic')!r} "
-                f"event_id={data.get('event_id')!r}"
-            )
+        schema_version = _validate_schema_version(
+            data.get("schema_version", 1),
+            topic=data.get("topic"),
+            event_id=data.get("event_id"),
+        )
         return cls(
             topic=data["topic"],
             payload=data.get("payload", {}),

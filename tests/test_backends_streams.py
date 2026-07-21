@@ -408,6 +408,38 @@ async def test_streams_poison_entry_acked_and_dropped(fake_redis):
     await backend.close()
 
 
+async def test_streams_unsupported_schema_version_acked_dropped_and_logged(
+    fake_redis, caplog
+):
+    """FEAT-319 M1 fix: a well-formed but forward-incompatible entry (from
+    a rolling upgrade with a newer producer) is dropped+ACKed like a
+    poison entry, but logged distinctly rather than as generic
+    'Undecodable'."""
+    future_env = make_envelope("app.future")
+    future_wire = future_env.to_dict()
+    future_wire["schema_version"] = 99
+    await fake_redis.xadd(
+        "evb:stream:app", {"envelope": json.dumps(future_wire)}
+    )
+    backend = make_backend(fake_redis)
+    received: list[EventEnvelope] = []
+
+    async def consumer(envelope):
+        received.append(envelope)
+
+    with caplog.at_level("ERROR"):
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(fake_redis.acked) == 1)
+    assert received == []
+    assert any(
+        "Unsupported schema_version" in r.message for r in caplog.records
+    )
+    assert not any(
+        "Undecodable" in r.message for r in caplog.records
+    )
+    await backend.close()
+
+
 # ---------------------------------------------------------------------------
 # Integration (real Redis) — spec §4 test_end_to_end_streams_mode
 # ---------------------------------------------------------------------------

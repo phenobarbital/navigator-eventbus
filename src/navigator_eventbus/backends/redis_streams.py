@@ -51,7 +51,7 @@ from navconfig import config as nav_config
 from navconfig.logging import logging
 
 from navigator_eventbus.backends.base import OnEnvelope
-from navigator_eventbus.envelope import EventEnvelope
+from navigator_eventbus.envelope import EventEnvelope, UnsupportedSchemaVersion
 
 #: Neutral defaults (FEAT-312) — override via constructor kwarg or navconfig.
 DEFAULT_STREAM_PREFIX = "evb:stream:"
@@ -348,6 +348,20 @@ class RedisStreamsBackend:
         try:
             data = raw.decode() if isinstance(raw, bytes) else raw
             envelope = EventEnvelope.from_dict(json.loads(data))
+        except UnsupportedSchemaVersion as exc:
+            # Distinct from a truly malformed/corrupt entry: the message is
+            # well-formed but carries a schema_version newer than this
+            # reader supports (rolling-upgrade skew — see spec Known Risks).
+            # Still dropped+ACKed (no DLQ hook at the backend layer), but
+            # logged distinctly so operators can tell version skew apart
+            # from poison data.
+            self.logger.error(
+                "Unsupported schema_version on stream entry %s on %s "
+                "dropped (rolling-upgrade skew?): %s",
+                msg_id, stream, exc,
+            )
+            await self._ack(stream, msg_id)
+            return
         except Exception as exc:  # noqa: BLE001 — poison entries isolated
             self.logger.error(
                 "Undecodable stream entry %s on %s dropped: %s",

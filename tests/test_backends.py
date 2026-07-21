@@ -281,6 +281,45 @@ async def test_pubsub_poison_message_isolated():
     await backend.close()
 
 
+async def test_pubsub_unsupported_schema_version_dropped_and_logged(caplog):
+    """FEAT-319 M1 fix: distinct log line for forward-incompatible
+    (well-formed, newer schema_version) vs. generic undecodable poison."""
+    future_env = make_envelope("future.topic")
+    future_wire = future_env.to_dict()
+    future_wire["schema_version"] = 99
+    future = {
+        "type": "pmessage",
+        "pattern": "evb:events:*",
+        "channel": f"evb:events:{future_env.topic}",
+        "data": json.dumps(future_wire),
+    }
+    good_env = make_envelope("after.future")
+    good = {
+        "type": "pmessage",
+        "pattern": "evb:events:*",
+        "channel": f"evb:events:{good_env.topic}",
+        "data": json.dumps(good_env.to_dict()),
+    }
+    fake = FakeRedis(incoming=[future, good])
+    backend = RedisPubSubBackend(client=fake)
+    received: list[EventEnvelope] = []
+
+    async def consumer(envelope):
+        received.append(envelope)
+
+    with caplog.at_level("ERROR"):
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(received) == 1)
+    assert received[0] == good_env
+    assert any(
+        "Unsupported schema_version" in r.message for r in caplog.records
+    )
+    assert not any(
+        "Undecodable" in r.message for r in caplog.records
+    )
+    await backend.close()
+
+
 # ---------------------------------------------------------------------------
 # BusCore integration
 # ---------------------------------------------------------------------------
