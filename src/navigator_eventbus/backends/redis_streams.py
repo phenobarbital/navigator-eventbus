@@ -44,6 +44,7 @@ import asyncio
 import json
 import os
 import socket
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Optional, Protocol
 
 import redis.asyncio as aioredis
@@ -146,6 +147,21 @@ class RedisStreamsBackend:
             ``stream_key_fn=`` produces names outside the
             ``<stream_prefix>*`` shape (a warning is logged, not raised, if
             ``stream_key_fn`` is set without ``streams``).
+        retention: Optional ``timedelta`` (FEAT-320 Module 3) — alternative,
+            time-based retention strategy. When set, a periodic
+            ``XTRIM ... MINID <now - retention>`` task replaces the
+            default count-based ``MAXLEN ~`` trimming (``publish()`` stops
+            passing ``maxlen=``/``approximate=`` to ``XADD``). Mutually
+            exclusive with ``maxlen`` IN PRACTICE — ``retention`` silently
+            wins if both are set (no constructor error).
+        retention_trim_interval: Seconds between ``XTRIM MINID`` passes
+            (only used when ``retention`` is set).
+
+    Note:
+        Exactly-one-trimmer-per-stream (whether via ``maxlen`` or
+        ``retention``) is the CALLER's responsibility across backend
+        instances — this class does not add distributed locking around
+        trimming, unchanged from today's ``maxlen`` principle.
     """
 
     #: Kept for backward-reading callers that inspect class attributes
@@ -175,6 +191,8 @@ class RedisStreamsBackend:
         codec: Optional["Codec"] = None,
         stream_key_fn: Optional[Callable[[str], str]] = None,
         streams: Optional[list[str]] = None,
+        retention: Optional[timedelta] = None,
+        retention_trim_interval: float = 60.0,
     ) -> None:
         if redis_url is None and client is None:
             raise ValueError(
@@ -206,17 +224,26 @@ class RedisStreamsBackend:
         self._codec: "Codec" = codec or _DefaultCodec()
         self._stream_key_fn = stream_key_fn
         self._explicit_streams = streams
+        self._retention = retention
+        self._retention_trim_interval = retention_trim_interval
 
         self._on_envelope: Optional[OnEnvelope] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
         self._sweeper_task: Optional[asyncio.Task[None]] = None
         self._broadcast_task: Optional[asyncio.Task[None]] = None
+        self._retention_task: Optional[asyncio.Task[None]] = None
         self._running = False
         self._streams: set[str] = set()
         self._groups_ready: set[str] = set()
         #: Per-stream last-delivered id cursor (broadcast mode only).
         self._last_ids: dict[str, str] = {}
         self.logger = logging.getLogger("navigator_eventbus.backends.redis_streams")
+        if self._retention is not None:
+            self.logger.debug(
+                "retention=%s set — maxlen=%s is ignored (time-based "
+                "XTRIM MINID trimming owns retention instead)",
+                self._retention, self._maxlen,
+            )
 
     # ------------------------------------------------------------------
     # TransportBackend protocol
@@ -231,11 +258,14 @@ class RedisStreamsBackend:
         await self._ensure_connection()
         stream = self._stream_for(envelope.topic)
         await self._ensure_group(stream)
+        trim_kwargs: dict[str, Any] = (
+            {} if self._retention is not None
+            else {"maxlen": self._maxlen, "approximate": True}
+        )
         await self._redis.xadd(  # type: ignore[union-attr]
             stream,
             self._codec.encode(envelope),
-            maxlen=self._maxlen,
-            approximate=True,
+            **trim_kwargs,
         )
 
     async def start_consumer(self, on_envelope: OnEnvelope) -> None:
@@ -284,12 +314,21 @@ class RedisStreamsBackend:
             self._sweeper_task = asyncio.create_task(
                 self._run_sweeper(), name="bus-redis-streams-sweeper"
             )
+        if self._retention is not None:
+            self._retention_task = asyncio.create_task(
+                self._run_retention_trimmer(), name="bus-redis-streams-retention"
+            )
 
     async def close(self) -> None:
         """Stop whichever task(s) are running for the active mode and release
         owned connections."""
         self._running = False
-        for task in (self._consumer_task, self._sweeper_task, self._broadcast_task):
+        for task in (
+            self._consumer_task,
+            self._sweeper_task,
+            self._broadcast_task,
+            self._retention_task,
+        ):
             if task is not None:
                 task.cancel()
                 try:
@@ -299,6 +338,7 @@ class RedisStreamsBackend:
         self._consumer_task = None
         self._sweeper_task = None
         self._broadcast_task = None
+        self._retention_task = None
         if self._redis is not None and self._client is None:
             try:
                 await self._redis.close()
@@ -527,6 +567,36 @@ class RedisStreamsBackend:
                 if not self._running:
                     return
                 self.logger.warning("Streams sweeper error: %s", exc)
+
+    async def _run_retention_trimmer(self) -> None:
+        """Periodic ``XTRIM ... MINID`` pass — alternative to inline
+        ``MAXLEN`` trimming, active only when ``retention=`` is set.
+
+        Mirrors :meth:`_run_sweeper`'s periodic-task shape (sleep, guard on
+        ``self._running``, isolate errors in degraded mode). Exactly-one-
+        trimmer-per-stream remains the CALLER's responsibility (unchanged
+        principle from today's ``maxlen`` trimming — no distributed
+        locking is added here).
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self._retention_trim_interval)
+                await self._ensure_connection()
+                cutoff_ms = int(
+                    (datetime.now(timezone.utc) - self._retention).timestamp()
+                    * 1000
+                )
+                minid = f"{cutoff_ms}-0"
+                for stream in list(self._streams):
+                    await self._redis.xtrim(  # type: ignore[union-attr]
+                        stream, minid=minid, approximate=True
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — degraded mode, same as sweeper
+                if not self._running:
+                    return
+                self.logger.warning("Retention trimmer error: %s", exc)
 
     async def _handle_message(
         self, stream: str, msg_id: Any, fields: dict[str, Any]

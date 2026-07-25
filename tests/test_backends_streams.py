@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -49,6 +50,7 @@ class FakeStreamsRedis:
         self.groups: dict[tuple[str, str], dict] = {}
         self.kv: dict[str, str] = {}
         self.acked: list[tuple[str, str, str]] = []
+        self.xtrim_calls: list[tuple] = []
         self._seq = 0
 
     async def xadd(self, name, fields, maxlen=None, approximate=True):
@@ -59,6 +61,18 @@ class FakeStreamsRedis:
         if maxlen is not None and len(entries) > maxlen:
             del entries[: len(entries) - maxlen]
         return msg_id
+
+    async def xtrim(self, name, minid=None, approximate=True):
+        """MINID-based trim: drops entries whose seq is below *minid*'s."""
+        self.xtrim_calls.append((name, minid, approximate))
+        entries = self.streams.get(name)
+        if entries is None or minid is None:
+            return 0
+        threshold = self._entry_seq(minid)
+        kept = [e for e in entries if self._entry_seq(e[0]) >= threshold]
+        removed = len(entries) - len(kept)
+        self.streams[name] = kept
+        return removed
 
     async def xgroup_create(self, name, group, id="0", mkstream=False):
         if name not in self.streams:
@@ -702,6 +716,82 @@ class TestCodecAndStreamNamingSeams:
         await wait_until(lambda: len(received) == 1)
         assert received[0] == env
         await backend.close()
+
+
+# ---------------------------------------------------------------------------
+# FEAT-320 Module 3 — time-based (XTRIM MINID) retention
+# ---------------------------------------------------------------------------
+
+
+class TestTimeBasedRetention:
+    async def test_retention_minid_trim_issued(self, fake_redis):
+        """XTRIM MINID is issued at the configured interval with a
+        correctly-derived cutoff id."""
+        backend = make_backend(
+            fake_redis, retention=timedelta(days=7), retention_trim_interval=0.02,
+        )
+
+        async def consumer(envelope):
+            pass
+
+        env = make_envelope("app.retained")
+        await backend.publish(env)
+        await backend.start_consumer(consumer)
+
+        await wait_until(lambda: len(fake_redis.xtrim_calls) >= 1, timeout=1.0)
+        name, minid, approximate = fake_redis.xtrim_calls[0]
+        assert name == "evb:stream:app"
+        assert approximate is True
+        expected_cutoff_ms = int(
+            (datetime.now(timezone.utc) - timedelta(days=7)).timestamp() * 1000
+        )
+        actual_cutoff_ms = int(minid.split("-")[0])
+        assert abs(actual_cutoff_ms - expected_cutoff_ms) < 5_000  # within 5s
+        await backend.close()
+
+    async def test_retention_disables_maxlen_argument(self, fake_redis, monkeypatch):
+        """publish() does not pass maxlen=/approximate= when retention= is set."""
+        backend = make_backend(fake_redis, retention=timedelta(days=1))
+        calls: list[dict] = []
+        real_xadd = fake_redis.xadd
+
+        async def spy_xadd(name, fields, **kwargs):
+            calls.append(kwargs)
+            return await real_xadd(name, fields, **kwargs)
+
+        monkeypatch.setattr(fake_redis, "xadd", spy_xadd)
+        env = make_envelope("app.noretentionmaxlen")
+        await backend.publish(env)
+        assert calls == [{}]
+
+    async def test_default_maxlen_trim_unchanged(self, fake_redis, monkeypatch):
+        """Omitting retention= keeps today's maxlen=/approximate= XADD kwargs."""
+        backend = make_backend(fake_redis)
+        calls: list[dict] = []
+        real_xadd = fake_redis.xadd
+
+        async def spy_xadd(name, fields, **kwargs):
+            calls.append(kwargs)
+            return await real_xadd(name, fields, **kwargs)
+
+        monkeypatch.setattr(fake_redis, "xadd", spy_xadd)
+        env = make_envelope("app.defaultmaxlen")
+        await backend.publish(env)
+        assert calls == [{"maxlen": backend._maxlen, "approximate": True}]
+
+    async def test_retention_task_cancelled_on_close(self, fake_redis):
+        """close() cleanly cancels the retention task when one was created."""
+        backend = make_backend(
+            fake_redis, retention=timedelta(days=1), retention_trim_interval=0.01,
+        )
+
+        async def consumer(envelope):
+            pass
+
+        await backend.start_consumer(consumer)
+        assert backend._retention_task is not None
+        await backend.close()
+        assert backend._retention_task is None
 
 
 # ---------------------------------------------------------------------------
