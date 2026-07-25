@@ -260,10 +260,41 @@ class TestBroadcastDeliveryMode:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude, Sonnet)
+**Date**: 2026-07-26
+**Notes**: Implemented `delivery="group"|"broadcast"` on `RedisStreamsBackend`.
+Added `_run_broadcast` (mirrors `_run_consumer`'s reconnect/backoff shape,
+swaps `XREADGROUP` for `XREAD`), `_refresh_streams_broadcast` (SCAN
+discovery seeding `self._last_ids[stream] = "$"` for newly found streams,
+no group join), and `_dispatch_broadcast_entry` (no dedup, no ACK).
+Extracted a shared `_decode_envelope` helper used by both
+`_handle_message` (group mode) and `_dispatch_broadcast_entry` (broadcast
+mode) to avoid duplicating the default wire-decode logic — this will be
+superseded by TASK-1844's `codec=` seam. `start_consumer`/`close` now
+branch on `self._delivery`, guarding every task cancellation with
+`is not None` (group mode still creates `_consumer_task` +
+`_sweeper_task`; broadcast mode only `_broadcast_task`).
 
-**Completed by**:
-**Date**:
-**Notes**:
+Extended `FakeStreamsRedis` with an `xread()` method supporting `"$"`
+(tail, resolved fresh per call so entries appended during a call's
+simulated block window are still caught — matching real Redis XREAD
+semantics) and numeric-id cursors (via a monotonic per-entry sequence
+number, order-independent of list position/trims). Added
+`TestBroadcastDeliveryMode` with 4 tests covering fan-out to two
+instances, no-replay-on-start, default (group) mode parity, and
+no-ack/no-autoclaim in broadcast mode.
 
-**Deviations from spec**: none
+Full suite green (`pytest -q -k "not integration"`: 302 passed, 1 skipped,
+7 deselected) and `ruff check src/navigator_eventbus/backends/redis_streams.py`
+clean. All pre-existing tests in `tests/test_backends_streams.py` pass
+unmodified (only additive changes).
+
+**Deviations from spec**: none. One test-design note: broadcast-mode
+discovery of a stream that is created (first `XADD`) concurrently with
+(but before) the reader's first SCAN pass will treat that first entry as
+"pre-existing" and skip it (by design — "no replay on start" applies to
+whatever already exists at discovery time). The unit tests reflect the
+intended usage pattern (stream pre-exists or a brief settle window before
+publishing) rather than a race between stream creation and first
+discovery; this matches real Redis `XREAD $` semantics (same limitation
+exists server-side) and is not a defect introduced by this task.
