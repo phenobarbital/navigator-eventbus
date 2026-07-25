@@ -134,6 +134,48 @@ class FakeStreamsRedis:
             if name.startswith(prefix):
                 yield name
 
+    @staticmethod
+    def _entry_seq(msg_id) -> int:
+        raw = msg_id.decode() if isinstance(msg_id, bytes) else msg_id
+        return int(str(raw).split("-")[0])
+
+    async def xread(self, streams: dict, count=None, block=None):
+        """Free-read: streams={name: last_id}. Supports "$" (tail-only) and
+        numeric ids. Returns the same [(stream, [(id, fields), ...]), ...]
+        shape as xreadgroup.
+
+        The "$" threshold is captured BEFORE any blocking sleep so entries
+        appended by another coroutine during the (simulated) block window
+        are still delivered on this same call — matching real Redis XREAD
+        semantics (the tail reference is fixed at command invocation, not
+        re-sampled on a later poll), while pre-existing entries are never
+        replayed.
+        """
+        thresholds = {}
+        for name, last_id in streams.items():
+            entries = self.streams.get(name, [])
+            if last_id == "$":
+                thresholds[name] = self._entry_seq(entries[-1][0]) if entries else -1
+            else:
+                thresholds[name] = self._entry_seq(last_id)
+
+        def _collect():
+            out = []
+            for name, threshold in thresholds.items():
+                entries = self.streams.get(name, [])
+                new = [e for e in entries if self._entry_seq(e[0]) > threshold]
+                if count:
+                    new = new[:count]
+                if new:
+                    out.append((name, new))
+            return out
+
+        results = _collect()
+        if not results and block:
+            await asyncio.sleep(min(block / 1000, 0.02))
+            results = _collect()
+        return results
+
     async def close(self):
         pass
 
@@ -376,6 +418,145 @@ async def test_streams_poison_entry_acked_and_dropped(fake_redis):
     await wait_until(lambda: len(fake_redis.acked) == 1)  # poison ACKed away
     assert received == []
     await backend.close()
+
+
+# ---------------------------------------------------------------------------
+# FEAT-320 Module 1 — broadcast delivery mode
+# ---------------------------------------------------------------------------
+
+
+class TestBroadcastDeliveryMode:
+    async def test_broadcast_two_instances_receive_all(self, fake_redis):
+        """Two broadcast backends on the same stream both see every entry
+        published AFTER they have discovered the stream (a stream that
+        already exists, per the "no replay" starting cursor — see
+        test_broadcast_no_replay_on_start for the discovery-boundary case)."""
+        # Pre-create the stream (a broadcast reader's "$" cursor is seeded
+        # relative to whatever already exists at DISCOVERY time — the
+        # instance's discovery must not race the stream's own creation).
+        seed = make_envelope("app.seed")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(seed.to_dict())}
+        )
+
+        received_a: list[EventEnvelope] = []
+        received_b: list[EventEnvelope] = []
+
+        backend_a = make_backend(
+            fake_redis, delivery="broadcast", consumer_name="bcast-a"
+        )
+        backend_b = make_backend(
+            fake_redis, delivery="broadcast", consumer_name="bcast-b"
+        )
+
+        async def consumer_a(env):
+            received_a.append(env)
+
+        async def consumer_b(env):
+            received_b.append(env)
+
+        await backend_a.start_consumer(consumer_a)
+        await backend_b.start_consumer(consumer_b)
+        await asyncio.sleep(0.05)  # let both readers discover the stream
+
+        env = make_envelope("app.fanout")
+        # Publish via a plain XADD (no group needed) — broadcast mode does
+        # not create groups, so use the fake directly like a third publisher.
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env.to_dict())}
+        )
+
+        await wait_until(lambda: len(received_a) == 1 and len(received_b) == 1)
+        assert received_a[0] == env
+        assert received_b[0] == env
+        await backend_a.close()
+        await backend_b.close()
+
+    async def test_broadcast_no_replay_on_start(self, fake_redis):
+        """Entries published BEFORE start_consumer() are not replayed."""
+        env = make_envelope("app.preexisting")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env.to_dict())}
+        )
+
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        backend = make_backend(fake_redis, delivery="broadcast")
+        await backend.start_consumer(consumer)
+        await asyncio.sleep(0.05)
+        assert received == []
+
+        env2 = make_envelope("app.after-start")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env2.to_dict())}
+        )
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env2
+        await backend.close()
+
+    async def test_broadcast_group_mode_default_unchanged(self, fake_redis):
+        """Omitting delivery= behaves exactly like today (no group/ack change)."""
+        backend = make_backend(fake_redis)
+        assert backend._delivery == "group"
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        env = make_envelope("app.job")
+        await backend.publish(env)
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env
+        await wait_until(lambda: len(fake_redis.acked) == 1)
+        await backend.close()
+
+    async def test_broadcast_no_ack_or_autoclaim_calls(self, fake_redis, monkeypatch):
+        """Broadcast mode never calls xack/xautoclaim."""
+        xack_calls: list = []
+        xautoclaim_calls: list = []
+        real_xack = fake_redis.xack
+        real_xautoclaim = fake_redis.xautoclaim
+
+        async def spy_xack(*args, **kwargs):
+            xack_calls.append((args, kwargs))
+            return await real_xack(*args, **kwargs)
+
+        async def spy_xautoclaim(*args, **kwargs):
+            xautoclaim_calls.append((args, kwargs))
+            return await real_xautoclaim(*args, **kwargs)
+
+        monkeypatch.setattr(fake_redis, "xack", spy_xack)
+        monkeypatch.setattr(fake_redis, "xautoclaim", spy_xautoclaim)
+
+        # Pre-create the stream — see test_broadcast_two_instances_receive_all
+        # for why discovery must not race the stream's own creation.
+        seed = make_envelope("app.seed")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(seed.to_dict())}
+        )
+
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        backend = make_backend(fake_redis, delivery="broadcast")
+        await backend.start_consumer(consumer)
+        await asyncio.sleep(0.05)  # let the reader discover the stream
+
+        env = make_envelope("app.nogroup")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env.to_dict())}
+        )
+        await wait_until(lambda: len(received) == 1)
+        await asyncio.sleep(0.1)  # let a couple of loop iterations pass
+        assert xack_calls == []
+        assert xautoclaim_calls == []
+        await backend.close()
 
 
 # ---------------------------------------------------------------------------

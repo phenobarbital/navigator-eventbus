@@ -44,7 +44,7 @@ import asyncio
 import json
 import os
 import socket
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import redis.asyncio as aioredis
 from navconfig import config as nav_config
@@ -94,6 +94,14 @@ class RedisStreamsBackend:
             of new ``<stream_prefix>*`` streams.
         reconnect_base_delay: Initial reconnect backoff in seconds.
         reconnect_max_delay: Reconnect backoff ceiling in seconds.
+        delivery: ``"group"`` (default, unchanged) uses consumer-GROUP
+            delivery (``XREADGROUP``/``XACK``/``XAUTOCLAIM``, one consumer
+            per entry). ``"broadcast"`` (FEAT-320 Module 1) is a group-less
+            free-read (``XREAD``) mode where every backend instance
+            dispatches every entry — no ACK, no sweeper/``XAUTOCLAIM``
+            (there is no PEL in group-less consumption). A newly discovered
+            stream starts at ``"$"`` (tail) so pre-existing entries are
+            never replayed on start.
     """
 
     #: Kept for backward-reading callers that inspect class attributes
@@ -119,6 +127,7 @@ class RedisStreamsBackend:
         stream_refresh_interval: float = 10.0,
         reconnect_base_delay: float = 0.5,
         reconnect_max_delay: float = 30.0,
+        delivery: Literal["group", "broadcast"] = "group",
     ) -> None:
         if redis_url is None and client is None:
             raise ValueError(
@@ -146,13 +155,17 @@ class RedisStreamsBackend:
         self._stream_refresh_interval = stream_refresh_interval
         self._reconnect_base_delay = reconnect_base_delay
         self._reconnect_max_delay = reconnect_max_delay
+        self._delivery = delivery
 
         self._on_envelope: Optional[OnEnvelope] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
         self._sweeper_task: Optional[asyncio.Task[None]] = None
+        self._broadcast_task: Optional[asyncio.Task[None]] = None
         self._running = False
         self._streams: set[str] = set()
         self._groups_ready: set[str] = set()
+        #: Per-stream last-delivered id cursor (broadcast mode only).
+        self._last_ids: dict[str, str] = {}
         self.logger = logging.getLogger("navigator_eventbus.backends.redis_streams")
 
     # ------------------------------------------------------------------
@@ -176,24 +189,35 @@ class RedisStreamsBackend:
         )
 
     async def start_consumer(self, on_envelope: OnEnvelope) -> None:
-        """Spawn the XREADGROUP consumer loop and the XAUTOCLAIM sweeper.
+        """Spawn this backend's consumption task(s) for the active *delivery* mode.
+
+        ``delivery="group"`` (default): the ``XREADGROUP`` consumer loop
+        plus the ``XAUTOCLAIM`` sweeper (unchanged from today).
+        ``delivery="broadcast"``: a group-less ``XREAD`` reader loop only —
+        no sweeper, since there is no PEL to reclaim.
 
         Args:
-            on_envelope: Awaited for each (deduped) envelope.
+            on_envelope: Awaited for each envelope (deduped in group mode).
         """
         self._on_envelope = on_envelope
         self._running = True
-        self._consumer_task = asyncio.create_task(
-            self._run_consumer(), name="bus-redis-streams-consumer"
-        )
-        self._sweeper_task = asyncio.create_task(
-            self._run_sweeper(), name="bus-redis-streams-sweeper"
-        )
+        if self._delivery == "broadcast":
+            self._broadcast_task = asyncio.create_task(
+                self._run_broadcast(), name="bus-redis-streams-broadcast"
+            )
+        else:
+            self._consumer_task = asyncio.create_task(
+                self._run_consumer(), name="bus-redis-streams-consumer"
+            )
+            self._sweeper_task = asyncio.create_task(
+                self._run_sweeper(), name="bus-redis-streams-sweeper"
+            )
 
     async def close(self) -> None:
-        """Stop consumer + sweeper and release owned connections."""
+        """Stop whichever task(s) are running for the active mode and release
+        owned connections."""
         self._running = False
-        for task in (self._consumer_task, self._sweeper_task):
+        for task in (self._consumer_task, self._sweeper_task, self._broadcast_task):
             if task is not None:
                 task.cancel()
                 try:
@@ -202,6 +226,7 @@ class RedisStreamsBackend:
                     pass
         self._consumer_task = None
         self._sweeper_task = None
+        self._broadcast_task = None
         if self._redis is not None and self._client is None:
             try:
                 await self._redis.close()
@@ -249,6 +274,20 @@ class RedisStreamsBackend:
             if name not in self._streams:
                 await self._ensure_group(name)
 
+    async def _refresh_streams_broadcast(self) -> None:
+        """Discover ``<stream_prefix>*`` streams for broadcast mode.
+
+        Group-less counterpart of :meth:`_refresh_streams`: no
+        ``xgroup_create``/PEL involved. Newly discovered streams start
+        their cursor at ``"$"`` (tail) so pre-existing entries are never
+        replayed.
+        """
+        async for key in self._redis.scan_iter(match=f"{self.stream_prefix}*"):  # type: ignore[union-attr]
+            name = key.decode() if isinstance(key, bytes) else key
+            if name not in self._streams:
+                self._streams.add(name)
+                self._last_ids[name] = "$"
+
     async def _run_consumer(self) -> None:
         """XREADGROUP loop with reconnect-and-backoff (degraded mode)."""
         delay = self._reconnect_base_delay
@@ -295,6 +334,81 @@ class RedisStreamsBackend:
                 self._groups_ready.clear()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self._reconnect_max_delay)
+
+    async def _run_broadcast(self) -> None:
+        """Group-less ``XREAD`` free-read loop (``delivery="broadcast"``).
+
+        Mirrors :meth:`_run_consumer`'s reconnect-and-backoff shape, but
+        every backend instance dispatches every entry it reads (no
+        dedup-set check/mark, no ``XACK``, no sweeper — there is no PEL in
+        group-less consumption).
+        """
+        delay = self._reconnect_base_delay
+        last_refresh = 0.0
+        while self._running:
+            try:
+                await self._ensure_connection()
+                loop_now = asyncio.get_running_loop().time()
+                if (
+                    not self._streams
+                    or loop_now - last_refresh >= self._stream_refresh_interval
+                ):
+                    await self._refresh_streams_broadcast()
+                    last_refresh = loop_now
+                if not self._streams:
+                    await asyncio.sleep(self._block_ms / 1000)
+                    continue
+                results = await self._redis.xread(  # type: ignore[union-attr]
+                    {stream: self._last_ids[stream] for stream in self._streams},
+                    count=self._batch_count,
+                    block=self._block_ms,
+                )
+                delay = self._reconnect_base_delay  # healthy — reset backoff
+                for stream, messages in results or []:
+                    stream_name = (
+                        stream.decode() if isinstance(stream, bytes) else stream
+                    )
+                    for msg_id, fields in messages:
+                        self._last_ids[stream_name] = msg_id
+                        await self._dispatch_broadcast_entry(stream_name, msg_id, fields)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — degraded mode
+                if not self._running:
+                    return
+                self.logger.warning(
+                    "Streams broadcast reader error (%s: %s) — reconnecting "
+                    "in %.1fs; local dispatch continues",
+                    type(exc).__name__, exc, delay,
+                )
+                if self._client is None:
+                    self._redis = None
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self._reconnect_max_delay)
+
+    async def _dispatch_broadcast_entry(
+        self, stream: str, msg_id: Any, fields: dict[str, Any]
+    ) -> None:
+        """Decode-and-dispatch one broadcast-mode entry.
+
+        No dedup-set check/mark and no ``XACK`` — broadcast means every
+        instance is SUPPOSED to see every entry; dedup collapsing does not
+        apply here, and there is no PEL to acknowledge against.
+        """
+        try:
+            envelope = self._decode_envelope(fields)
+        except Exception as exc:  # noqa: BLE001 — poison entries isolated
+            self.logger.error(
+                "Undecodable broadcast entry %s on %s dropped: %s",
+                msg_id, stream, exc,
+            )
+            return
+        try:
+            await self._on_envelope(envelope)  # type: ignore[misc]
+        except Exception:  # noqa: BLE001 — isolated, no redelivery mechanism
+            self.logger.exception(
+                "Broadcast consumer callback failed for %s", envelope.topic,
+            )
 
     async def _run_sweeper(self) -> None:
         """Periodic XAUTOCLAIM pass reclaiming stale pending entries."""
@@ -344,10 +458,8 @@ class RedisStreamsBackend:
         processed twice across consumers — that IS at-least-once;
         consumers must be idempotent.
         """
-        raw = fields.get("envelope") or fields.get(b"envelope")  # type: ignore[call-overload]
         try:
-            data = raw.decode() if isinstance(raw, bytes) else raw
-            envelope = EventEnvelope.from_dict(json.loads(data))
+            envelope = self._decode_envelope(fields)
         except Exception as exc:  # noqa: BLE001 — poison entries isolated
             self.logger.error(
                 "Undecodable stream entry %s on %s dropped: %s",
@@ -382,6 +494,18 @@ class RedisStreamsBackend:
                 envelope.event_id,
             )
         await self._ack(stream, msg_id)
+
+    def _decode_envelope(self, fields: dict[str, Any]) -> EventEnvelope:
+        """Decode the wire-format ``{"envelope": ...}`` JSON field.
+
+        Shared by :meth:`_handle_message` (group mode) and
+        :meth:`_dispatch_broadcast_entry` (broadcast mode) — the default
+        wire shape today; superseded by the ``codec=`` seam (FEAT-320
+        Module 2) when set.
+        """
+        raw = fields.get("envelope") or fields.get(b"envelope")  # type: ignore[call-overload]
+        data = raw.decode() if isinstance(raw, bytes) else raw
+        return EventEnvelope.from_dict(json.loads(data))
 
     async def _ack(self, stream: str, msg_id: Any) -> None:
         """Best-effort XACK."""
