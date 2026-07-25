@@ -44,7 +44,7 @@ import asyncio
 import json
 import os
 import socket
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional, Protocol
 
 import redis.asyncio as aioredis
 from navconfig import config as nav_config
@@ -62,6 +62,39 @@ DEFAULT_GROUP = "evb-bus"
 def _default_consumer_name() -> str:
     """Stable per-instance consumer name for XAUTOCLAIM bookkeeping."""
     return f"{socket.gethostname()}-{os.getpid()}"
+
+
+class Codec(Protocol):
+    """Wire encode/decode seam for :class:`RedisStreamsBackend` (FEAT-320
+    Module 2).
+
+    Replaces the hard-coded ``{"envelope": json.dumps(envelope.to_dict())}``
+    wire shape when supplied via ``codec=`` — lets a consuming app plug in
+    its own envelope wire format without forking this backend. Structural
+    typing (mirrors this repo's :class:`~navigator_eventbus.backends.base.
+    TransportBackend` Protocol convention), not a Pydantic model.
+    """
+
+    def encode(self, envelope: EventEnvelope) -> dict[str, Any]:
+        """Encode *envelope* into ``XADD`` field/value pairs."""
+        ...
+
+    def decode(self, fields: dict[str, Any]) -> EventEnvelope:
+        """Decode ``XADD`` field/value pairs back into an ``EventEnvelope``."""
+        ...
+
+
+class _DefaultCodec:
+    """Preserves today's exact wire shape — the implicit codec used when
+    ``codec=`` is not supplied."""
+
+    def encode(self, envelope: EventEnvelope) -> dict[str, Any]:
+        return {"envelope": json.dumps(envelope.to_dict())}
+
+    def decode(self, fields: dict[str, Any]) -> EventEnvelope:
+        raw = fields.get("envelope") or fields.get(b"envelope")  # type: ignore[call-overload]
+        data = raw.decode() if isinstance(raw, bytes) else raw
+        return EventEnvelope.from_dict(json.loads(data))
 
 
 class RedisStreamsBackend:
@@ -102,6 +135,17 @@ class RedisStreamsBackend:
             (there is no PEL in group-less consumption). A newly discovered
             stream starts at ``"$"`` (tail) so pre-existing entries are
             never replayed on start.
+        codec: Optional :class:`Codec` (FEAT-320 Module 2) — encode/decode
+            seam that replaces the hard-coded ``{"envelope": ...}`` wire
+            shape. Defaults to preserving today's exact format.
+        stream_key_fn: Optional ``Callable[[str], str]`` (FEAT-320
+            Module 2) replacing ``_stream_for``'s ``<stream_prefix>
+            <topic-class>`` naming with a caller-owned scheme.
+        streams: Optional explicit stream set (FEAT-320 Module 2) that
+            bypasses ``SCAN``-based discovery entirely — required whenever
+            ``stream_key_fn=`` produces names outside the
+            ``<stream_prefix>*`` shape (a warning is logged, not raised, if
+            ``stream_key_fn`` is set without ``streams``).
     """
 
     #: Kept for backward-reading callers that inspect class attributes
@@ -128,6 +172,9 @@ class RedisStreamsBackend:
         reconnect_base_delay: float = 0.5,
         reconnect_max_delay: float = 30.0,
         delivery: Literal["group", "broadcast"] = "group",
+        codec: Optional["Codec"] = None,
+        stream_key_fn: Optional[Callable[[str], str]] = None,
+        streams: Optional[list[str]] = None,
     ) -> None:
         if redis_url is None and client is None:
             raise ValueError(
@@ -156,6 +203,9 @@ class RedisStreamsBackend:
         self._reconnect_base_delay = reconnect_base_delay
         self._reconnect_max_delay = reconnect_max_delay
         self._delivery = delivery
+        self._codec: "Codec" = codec or _DefaultCodec()
+        self._stream_key_fn = stream_key_fn
+        self._explicit_streams = streams
 
         self._on_envelope: Optional[OnEnvelope] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
@@ -183,7 +233,7 @@ class RedisStreamsBackend:
         await self._ensure_group(stream)
         await self._redis.xadd(  # type: ignore[union-attr]
             stream,
-            {"envelope": json.dumps(envelope.to_dict())},
+            self._codec.encode(envelope),
             maxlen=self._maxlen,
             approximate=True,
         )
@@ -196,11 +246,33 @@ class RedisStreamsBackend:
         ``delivery="broadcast"``: a group-less ``XREAD`` reader loop only —
         no sweeper, since there is no PEL to reclaim.
 
+        When ``streams=`` was supplied at construction, this explicit set
+        is seeded ONCE here (bypassing ``SCAN``-based discovery entirely
+        for the lifetime of this instance).
+
         Args:
             on_envelope: Awaited for each envelope (deduped in group mode).
         """
         self._on_envelope = on_envelope
         self._running = True
+        if self._stream_key_fn is not None and not self._explicit_streams:
+            self.logger.warning(
+                "stream_key_fn= is set without streams= — SCAN-based "
+                "discovery (match=%s*) may not find custom-named streams; "
+                "pass streams=[...] explicitly if your naming scheme does "
+                "not share the <stream_prefix>* shape.",
+                self.stream_prefix,
+            )
+        if self._explicit_streams:
+            await self._ensure_connection()
+            if self._delivery == "broadcast":
+                for name in self._explicit_streams:
+                    if name not in self._streams:
+                        self._streams.add(name)
+                        self._last_ids[name] = "$"
+            else:
+                for name in self._explicit_streams:
+                    await self._ensure_group(name)
         if self._delivery == "broadcast":
             self._broadcast_task = asyncio.create_task(
                 self._run_broadcast(), name="bus-redis-streams-broadcast"
@@ -239,7 +311,14 @@ class RedisStreamsBackend:
     # ------------------------------------------------------------------
 
     def _stream_for(self, topic: str) -> str:
-        """Stream key for *topic* (per topic-class — spec-fixed sharding)."""
+        """Stream key for *topic*.
+
+        Uses ``stream_key_fn=`` (FEAT-320 Module 2) when supplied;
+        otherwise the spec-fixed ``<stream_prefix><topic-class>`` sharding
+        (unchanged default).
+        """
+        if self._stream_key_fn is not None:
+            return self._stream_key_fn(topic)
         return f"{self.stream_prefix}{topic.split('.', 1)[0]}"
 
     async def _ensure_connection(self) -> None:
@@ -268,7 +347,14 @@ class RedisStreamsBackend:
         self._streams.add(stream)
 
     async def _refresh_streams(self) -> None:
-        """Discover ``<stream_prefix>*`` streams and join their groups."""
+        """Discover ``<stream_prefix>*`` streams and join their groups.
+
+        No-op when ``streams=`` (FEAT-320 Module 2) was supplied — the
+        explicit set is seeded once in :meth:`start_consumer`, bypassing
+        ``SCAN``-based discovery entirely.
+        """
+        if self._explicit_streams is not None:
+            return
         async for key in self._redis.scan_iter(match=f"{self.stream_prefix}*"):  # type: ignore[union-attr]
             name = key.decode() if isinstance(key, bytes) else key
             if name not in self._streams:
@@ -280,8 +366,11 @@ class RedisStreamsBackend:
         Group-less counterpart of :meth:`_refresh_streams`: no
         ``xgroup_create``/PEL involved. Newly discovered streams start
         their cursor at ``"$"`` (tail) so pre-existing entries are never
-        replayed.
+        replayed. No-op when ``streams=`` was supplied (seeded once in
+        :meth:`start_consumer`).
         """
+        if self._explicit_streams is not None:
+            return
         async for key in self._redis.scan_iter(match=f"{self.stream_prefix}*"):  # type: ignore[union-attr]
             name = key.decode() if isinstance(key, bytes) else key
             if name not in self._streams:
@@ -396,7 +485,7 @@ class RedisStreamsBackend:
         apply here, and there is no PEL to acknowledge against.
         """
         try:
-            envelope = self._decode_envelope(fields)
+            envelope = self._codec.decode(fields)
         except Exception as exc:  # noqa: BLE001 — poison entries isolated
             self.logger.error(
                 "Undecodable broadcast entry %s on %s dropped: %s",
@@ -459,7 +548,7 @@ class RedisStreamsBackend:
         consumers must be idempotent.
         """
         try:
-            envelope = self._decode_envelope(fields)
+            envelope = self._codec.decode(fields)
         except Exception as exc:  # noqa: BLE001 — poison entries isolated
             self.logger.error(
                 "Undecodable stream entry %s on %s dropped: %s",
@@ -494,18 +583,6 @@ class RedisStreamsBackend:
                 envelope.event_id,
             )
         await self._ack(stream, msg_id)
-
-    def _decode_envelope(self, fields: dict[str, Any]) -> EventEnvelope:
-        """Decode the wire-format ``{"envelope": ...}`` JSON field.
-
-        Shared by :meth:`_handle_message` (group mode) and
-        :meth:`_dispatch_broadcast_entry` (broadcast mode) — the default
-        wire shape today; superseded by the ``codec=`` seam (FEAT-320
-        Module 2) when set.
-        """
-        raw = fields.get("envelope") or fields.get(b"envelope")  # type: ignore[call-overload]
-        data = raw.decode() if isinstance(raw, bytes) else raw
-        return EventEnvelope.from_dict(json.loads(data))
 
     async def _ack(self, stream: str, msg_id: Any) -> None:
         """Best-effort XACK."""

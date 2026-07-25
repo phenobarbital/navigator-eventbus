@@ -560,6 +560,151 @@ class TestBroadcastDeliveryMode:
 
 
 # ---------------------------------------------------------------------------
+# FEAT-320 Module 2 — codec + stream-naming + explicit streams seams
+# ---------------------------------------------------------------------------
+
+
+class CustomCodec:
+    """Test double: a NON-default wire shape (``"payload"`` field instead
+    of ``"envelope"``) proving the codec seam is actually wired in, not
+    silently ignored."""
+
+    def encode(self, envelope: EventEnvelope) -> dict:
+        return {"payload": json.dumps(envelope.to_dict())}
+
+    def decode(self, fields: dict) -> EventEnvelope:
+        raw = fields.get("payload") or fields.get(b"payload")
+        data = raw.decode() if isinstance(raw, bytes) else raw
+        return EventEnvelope.from_dict(json.loads(data))
+
+
+class TestCodecAndStreamNamingSeams:
+    async def test_custom_codec_roundtrip(self, fake_redis):
+        """Custom Codec.encode/decode round-trips a non-default wire shape."""
+        backend = make_backend(fake_redis, codec=CustomCodec())
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        env = make_envelope("app.custom")
+        await backend.publish(env)
+        # The wire shape actually changed — proves the seam is wired.
+        _, fields = fake_redis.streams["evb:stream:app"][0]
+        assert "payload" in fields
+        assert "envelope" not in fields
+
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env
+        await backend.close()
+
+    async def test_custom_stream_key_fn_with_explicit_streams(self, fake_redis):
+        """stream_key_fn= + streams=[...] bypasses SCAN discovery."""
+        def custom_key(topic: str) -> str:
+            return f"custom:{topic}"
+
+        backend = make_backend(
+            fake_redis,
+            stream_key_fn=custom_key,
+            streams=["custom:app.custom2"],
+        )
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        env = make_envelope("app.custom2")
+        await backend.publish(env)
+        assert "custom:app.custom2" in fake_redis.streams
+
+        # A default-prefix-shaped stream must NEVER be picked up — SCAN is
+        # bypassed entirely when streams= is set.
+        await fake_redis.xadd("evb:stream:decoy", {"envelope": "{}"})
+
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env
+        assert backend._streams == {"custom:app.custom2"}
+        await backend.close()
+
+    async def test_stream_key_fn_without_streams_warns(self, fake_redis, caplog):
+        """stream_key_fn without streams= logs a warning, does not raise."""
+        backend = make_backend(fake_redis, stream_key_fn=lambda t: f"x:{t}")
+
+        async def consumer(envelope):
+            pass
+
+        with caplog.at_level(
+            "WARNING", logger="navigator_eventbus.backends.redis_streams"
+        ):
+            await backend.start_consumer(consumer)
+        assert any("stream_key_fn" in rec.message for rec in caplog.records)
+        await backend.close()
+
+    async def test_default_codec_and_naming_unchanged(self, fake_redis):
+        """Omitting codec=/stream_key_fn=/streams= behaves exactly like today."""
+        backend = make_backend(fake_redis)
+        assert backend._stream_key_fn is None
+        assert backend._explicit_streams is None
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        env = make_envelope("app.defaultseam")
+        await backend.publish(env)
+        _, fields = fake_redis.streams["evb:stream:app"][-1]
+        assert "envelope" in fields  # default wire shape unchanged
+
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env
+        await backend.close()
+
+    async def test_stream_key_fn_and_broadcast_compose(self, fake_redis):
+        """Broadcast mode + custom naming together (the FieldSync WS-path
+        shape) — TASK-1843 (broadcast mode) had already landed when this
+        task was implemented, so this compose test is written directly."""
+        def custom_key(topic: str) -> str:
+            return f"custom:{topic}"
+
+        # Pre-seed the explicit stream (same discovery-boundary rationale
+        # as TestBroadcastDeliveryMode's tests: the "$" cursor is resolved
+        # fresh against whatever exists at each poll until real entries are
+        # returned, so publishing on a stream still ramping up its very
+        # first poll is racy — seed first, settle, then publish the entry
+        # under test).
+        seed = make_envelope("app.compose")
+        await fake_redis.xadd(
+            "custom:app.compose", {"envelope": json.dumps(seed.to_dict())}
+        )
+
+        backend = make_backend(
+            fake_redis,
+            delivery="broadcast",
+            stream_key_fn=custom_key,
+            streams=["custom:app.compose"],
+        )
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        await backend.start_consumer(consumer)
+        assert backend._streams == {"custom:app.compose"}
+        await asyncio.sleep(0.05)
+
+        env = make_envelope("app.compose")
+        await fake_redis.xadd(
+            "custom:app.compose", {"envelope": json.dumps(env.to_dict())}
+        )
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env
+        await backend.close()
+
+
+# ---------------------------------------------------------------------------
 # Integration (real Redis) — spec §4 test_end_to_end_streams_mode
 # ---------------------------------------------------------------------------
 
