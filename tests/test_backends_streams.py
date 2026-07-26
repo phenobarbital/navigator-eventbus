@@ -62,6 +62,15 @@ class FakeStreamsRedis:
             del entries[: len(entries) - maxlen]
         return msg_id
 
+    async def xrevrange(self, name, max="+", min="-", count=None):
+        """Most-recent-first entries — used by the backend to resolve a
+        concrete tail cursor ONCE at broadcast-mode discovery time (see
+        RedisStreamsBackend._resolve_tail_id)."""
+        entries = list(reversed(self.streams.get(name, [])))
+        if count:
+            entries = entries[:count]
+        return entries
+
     async def xtrim(self, name, minid=None, approximate=True):
         """MINID-based trim: drops entries whose seq is below *minid*'s."""
         self.xtrim_calls.append((name, minid, approximate))
@@ -604,6 +613,15 @@ class TestBroadcastDeliveryMode:
         assert xautoclaim_calls == []
         await backend.close()
 
+    async def test_broadcast_publish_does_not_create_a_group(self, fake_redis):
+        """Regression: publish() from a broadcast-mode instance must NOT
+        create a (permanently unused) consumer group — broadcast mode has
+        no PEL by design (spec: "no PEL in group-less consumption")."""
+        backend = make_backend(fake_redis, delivery="broadcast")
+        env = make_envelope("app.broadcastpublish")
+        await backend.publish(env)
+        assert fake_redis.groups == {}
+
 
 # ---------------------------------------------------------------------------
 # FEAT-320 Module 2 — codec + stream-naming + explicit streams seams
@@ -875,6 +893,48 @@ class TestMaxDeliveriesDlqParking:
         assert received == []
         await backend.close()
 
+    async def test_max_deliveries_parks_entry_owned_by_other_consumer(
+        self, fake_redis
+    ):
+        """Regression: an over-threshold entry still owned by a DIFFERENT
+        (crashed) consumer at sweep time must still be parked to on_dlq.
+
+        This is the primary failure mode Module 4 exists for (spec §2:
+        "the SAME entry crashing every consumer it lands on") — the
+        XPENDING check must not be scoped to this instance's OWN consumer
+        name, since XAUTOCLAIM reclaims stale entries regardless of their
+        current owner.
+        """
+        env = make_envelope("app.poison-other-owner")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env.to_dict())}
+        )
+        await fake_redis.xgroup_create("evb:stream:app", "evb-bus", id="0")
+        g = fake_redis.groups[("evb:stream:app", "evb-bus")]
+        g["delivered"] = 1
+        # Owned by a DIFFERENT consumer than the one about to sweep it.
+        g["pending"]["1-0"] = ["other-crashed-consumer", time.monotonic() - 10, 5]
+
+        dlq_calls: list = []
+
+        async def on_dlq(envelope, **kwargs):
+            dlq_calls.append(kwargs)
+
+        backend = make_backend(
+            fake_redis, consumer_name="my-own-consumer",
+            max_deliveries=2, on_dlq=on_dlq,
+        )
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(dlq_calls) == 1)
+        assert received == []
+        assert dlq_calls[0]["attempts"] == 5
+        await backend.close()
+
     async def test_max_deliveries_under_threshold_still_redelivers(self, fake_redis):
         """An entry reclaimed <= N times dispatches normally."""
         env = make_envelope("app.retryok")
@@ -988,5 +1048,62 @@ async def test_end_to_end_streams_two_consumers():
     processed = received_a + received_b
     assert sorted(processed) == sorted(e.event_id for e in envs)
     assert len(set(processed)) == 20  # each processed exactly once (dedup)
+    await backend_a.close()
+    await backend_b.close()
+
+
+@pytest.mark.integration
+async def test_end_to_end_broadcast_two_instances():
+    """Two broadcast-mode instances, real Redis: BOTH receive every entry
+    published after discovery (spec §4
+    ``test_end_to_end_broadcast_two_instances``, FEAT-320 Module 1)."""
+    import redis.asyncio as aioredis
+
+    redis_url = os.environ.get("REDIS_TEST_URL", "redis://localhost:6379/9")
+    try:
+        probe = await aioredis.from_url(redis_url)
+        await probe.ping()
+        await probe.flushdb()
+        await probe.close()
+    except Exception:
+        pytest.skip(f"No Redis reachable at {redis_url}")
+
+    received_a: list[str] = []
+    received_b: list[str] = []
+
+    backend_a = RedisStreamsBackend(
+        redis_url, delivery="broadcast", consumer_name="bitest-a",
+        block_ms=100, stream_refresh_interval=0.1,
+    )
+    backend_b = RedisStreamsBackend(
+        redis_url, delivery="broadcast", consumer_name="bitest-b",
+        block_ms=100, stream_refresh_interval=0.1,
+    )
+
+    async def consumer_a(env):
+        received_a.append(env.event_id)
+
+    async def consumer_b(env):
+        received_b.append(env.event_id)
+
+    # Seed the stream so discovery resolves its tail cursor against an
+    # existing entry (real-Redis analogue of the fake-backed unit tests'
+    # "pre-create, then settle" pattern), then publish the entries under
+    # test once both readers have discovered the stream.
+    await backend_a.publish(make_envelope("itest.broadcast.seed"))
+
+    await backend_a.start_consumer(consumer_a)
+    await backend_b.start_consumer(consumer_b)
+    await asyncio.sleep(0.3)
+
+    envs = [make_envelope(f"itest.broadcast.job{i}") for i in range(10)]
+    for env in envs:
+        await backend_a.publish(env)
+
+    await wait_until(
+        lambda: len(received_a) == 10 and len(received_b) == 10, timeout=10.0
+    )
+    assert sorted(received_a) == sorted(e.event_id for e in envs)
+    assert sorted(received_b) == sorted(e.event_id for e in envs)
     await backend_a.close()
     await backend_b.close()

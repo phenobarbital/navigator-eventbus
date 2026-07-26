@@ -154,6 +154,16 @@ class RedisStreamsBackend:
             passing ``maxlen=``/``approximate=`` to ``XADD``). Mutually
             exclusive with ``maxlen`` IN PRACTICE — ``retention`` silently
             wins if both are set (no constructor error).
+
+            **Caveat**: the trimmer task only runs while ``start_consumer()``
+            has been called on this instance (it is spawned there, same as
+            the sweeper/retention/broadcast tasks). A producer-only
+            instance (never consumes) that sets ``retention=`` gets NO
+            trimming at all — unlike ``maxlen``, which trims inline on
+            every ``XADD`` regardless of whether this instance ever
+            consumes. Pair ``retention=`` with at least one long-running
+            consumer instance per stream, or keep ``maxlen`` (the default)
+            for producer-only deployments.
         retention_trim_interval: Seconds between ``XTRIM MINID`` passes
             (only used when ``retention`` is set).
         max_deliveries: Optional int (FEAT-320 Module 4, ``delivery="group"``
@@ -213,6 +223,10 @@ class RedisStreamsBackend:
         if redis_url is None and client is None:
             raise ValueError(
                 "RedisStreamsBackend requires a redis_url or an injected client"
+            )
+        if delivery not in ("group", "broadcast"):
+            raise ValueError(
+                f"delivery must be 'group' or 'broadcast', got {delivery!r}"
             )
         if delivery == "broadcast" and max_deliveries is not None:
             raise ValueError(
@@ -281,7 +295,11 @@ class RedisStreamsBackend:
         """
         await self._ensure_connection()
         stream = self._stream_for(envelope.topic)
-        await self._ensure_group(stream)
+        # No consumer group in broadcast mode — group-less consumption has
+        # no PEL, so joining a group here would create a permanently
+        # unused one (FEAT-320 Module 1: "no PEL in group-less consumption").
+        if self._delivery != "broadcast":
+            await self._ensure_group(stream)
         trim_kwargs: dict[str, Any] = (
             {} if self._retention is not None
             else {"maxlen": self._maxlen, "approximate": True}
@@ -323,7 +341,7 @@ class RedisStreamsBackend:
                 for name in self._explicit_streams:
                     if name not in self._streams:
                         self._streams.add(name)
-                        self._last_ids[name] = "$"
+                        self._last_ids[name] = await self._resolve_tail_id(name)
             else:
                 for name in self._explicit_streams:
                     await self._ensure_group(name)
@@ -429,8 +447,10 @@ class RedisStreamsBackend:
 
         Group-less counterpart of :meth:`_refresh_streams`: no
         ``xgroup_create``/PEL involved. Newly discovered streams start
-        their cursor at ``"$"`` (tail) so pre-existing entries are never
-        replayed. No-op when ``streams=`` was supplied (seeded once in
+        their cursor at whatever :meth:`_resolve_tail_id` resolves to
+        (effectively ``"$"``/tail, resolved ONCE — see that method's
+        docstring for why) so pre-existing entries are never replayed.
+        No-op when ``streams=`` was supplied (seeded once in
         :meth:`start_consumer`).
         """
         if self._explicit_streams is not None:
@@ -439,7 +459,37 @@ class RedisStreamsBackend:
             name = key.decode() if isinstance(key, bytes) else key
             if name not in self._streams:
                 self._streams.add(name)
-                self._last_ids[name] = "$"
+                self._last_ids[name] = await self._resolve_tail_id(name)
+
+    async def _resolve_tail_id(self, stream: str) -> str:
+        """Resolve a concrete starting cursor for broadcast mode's ``XREAD``.
+
+        Real Redis resolves the ``"$"`` sentinel FRESH at each ``XREAD``
+        invocation — if this backend kept passing the literal ``"$"`` on
+        every empty poll (no entries returned yet), an entry published in
+        the gap between two non-matching polls would have its arrival
+        "invisible": the NEXT poll's ``"$"`` would resolve past it, and it
+        would be silently skipped forever (no PEL/redelivery in broadcast
+        mode to fall back on). Resolving to a concrete id ONCE, right at
+        discovery — via the id of the current last entry (``XREVRANGE ...
+        COUNT 1``), or ``"0-0"`` for an empty stream — and then advancing
+        it only as real entries are read (see :meth:`_run_broadcast`)
+        closes that window: every subsequent poll targets a fixed,
+        monotonically-advancing id instead of a sentinel re-evaluated
+        against a moving target.
+        """
+        try:
+            tail = await self._redis.xrevrange(stream, count=1)  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001 — fall back to the sentinel
+            self.logger.debug(
+                "XREVRANGE tail resolution failed for %s (%s) — falling "
+                "back to \"$\"", stream, exc,
+            )
+            return "$"
+        if tail:
+            msg_id, _ = tail[0]
+            return msg_id.decode() if isinstance(msg_id, bytes) else msg_id
+        return "0-0"
 
     async def _run_consumer(self) -> None:
         """XREADGROUP loop with reconnect-and-backoff (degraded mode)."""
@@ -548,13 +598,10 @@ class RedisStreamsBackend:
         instance is SUPPOSED to see every entry; dedup collapsing does not
         apply here, and there is no PEL to acknowledge against.
         """
-        try:
-            envelope = self._codec.decode(fields)
-        except Exception as exc:  # noqa: BLE001 — poison entries isolated
-            self.logger.error(
-                "Undecodable broadcast entry %s on %s dropped: %s",
-                msg_id, stream, exc,
-            )
+        envelope = await self._decode_or_ack(
+            stream, msg_id, fields, context="broadcast entry", ack=False
+        )
+        if envelope is None:
             return
         try:
             await self._on_envelope(envelope)  # type: ignore[misc]
@@ -578,10 +625,18 @@ class RedisStreamsBackend:
                 await self._ensure_connection()
                 for stream in list(self._streams):
                     if self._max_deliveries is not None:
+                        # No consumername= filter: XAUTOCLAIM reclaims stale
+                        # entries regardless of their CURRENT owner (that is
+                        # the whole point — the same poison entry crashing a
+                        # DIFFERENT consumer each time it is reclaimed, per
+                        # spec §2). Filtering XPENDING to this instance's
+                        # own consumer name would only ever match entries
+                        # ALREADY owned by self._consumer, silently missing
+                        # every entry still attributed to some other
+                        # stale/crashed consumer at the moment of this sweep.
                         pending = await self._redis.xpending_range(  # type: ignore[union-attr]
                             name=stream, groupname=self._group,
                             min="-", max="+", count=self._batch_count,
-                            consumername=self._consumer,
                             idle=self._min_idle_time_ms,
                         )
                         over_threshold = {
@@ -628,14 +683,10 @@ class RedisStreamsBackend:
         normal dedup-check/mark path too — it is being parked, not
         processed), always ``XACK``ed so it is never reclaimed again.
         """
-        try:
-            envelope = self._codec.decode(fields)
-        except Exception as exc:  # noqa: BLE001 — poison entry, ack and drop
-            self.logger.error(
-                "Undecodable over-threshold entry %s on %s dropped: %s",
-                msg_id, stream, exc,
-            )
-            await self._ack(stream, msg_id)
+        envelope = await self._decode_or_ack(
+            stream, msg_id, fields, context="over-threshold entry"
+        )
+        if envelope is None:
             return
         if self._on_dlq is not None:
             try:
@@ -703,14 +754,10 @@ class RedisStreamsBackend:
         processed twice across consumers — that IS at-least-once;
         consumers must be idempotent.
         """
-        try:
-            envelope = self._codec.decode(fields)
-        except Exception as exc:  # noqa: BLE001 — poison entries isolated
-            self.logger.error(
-                "Undecodable stream entry %s on %s dropped: %s",
-                msg_id, stream, exc,
-            )
-            await self._ack(stream, msg_id)
+        envelope = await self._decode_or_ack(
+            stream, msg_id, fields, context="stream entry"
+        )
+        if envelope is None:
             return
 
         dedup_key = f"{self.dedup_prefix}{envelope.event_id}"
@@ -739,6 +786,45 @@ class RedisStreamsBackend:
                 envelope.event_id,
             )
         await self._ack(stream, msg_id)
+
+    async def _decode_or_ack(
+        self,
+        stream: str,
+        msg_id: Any,
+        fields: dict[str, Any],
+        *,
+        context: str,
+        ack: bool = True,
+    ) -> Optional[EventEnvelope]:
+        """Decode *fields* via the active codec; on failure, log the
+        poison entry and (optionally) ``XACK`` it away — shared by every
+        dispatch path (:meth:`_handle_message`, :meth:`_dispatch_broadcast_entry`,
+        :meth:`_park_to_dlq`) that needs "decode, or drop-and-move-on".
+
+        Args:
+            stream: Stream key (for logging/ack).
+            msg_id: Entry id (for logging/ack).
+            fields: Raw ``XADD`` field/value pairs to decode.
+            context: Short label for the log message (e.g. ``"stream
+                entry"``, ``"broadcast entry"``, ``"over-threshold entry"``).
+            ack: Whether to ``XACK`` on decode failure. Broadcast mode has
+                no PEL to acknowledge against, so callers there pass
+                ``False``.
+
+        Returns:
+            The decoded envelope, or ``None`` if decoding failed (already
+            logged, and ACKed if requested).
+        """
+        try:
+            return self._codec.decode(fields)
+        except Exception as exc:  # noqa: BLE001 — poison entries isolated
+            self.logger.error(
+                "Undecodable %s %s on %s dropped: %s",
+                context, msg_id, stream, exc,
+            )
+            if ack:
+                await self._ack(stream, msg_id)
+            return None
 
     async def _ack(self, stream: str, msg_id: Any) -> None:
         """Best-effort XACK."""
