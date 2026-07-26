@@ -347,15 +347,29 @@ Full suite green (`pytest -q -k "not integration"`: 315 passed, 1 skipped,
 7 deselected) and `ruff check src/navigator_eventbus/backends/redis_streams.py`
 clean. All pre-existing tests pass unmodified.
 
-**Deviations from spec**: none. One implementation note: the
-`xpending_range` query filters by `consumername=self._consumer` (per this
-task's own Pattern to Follow) — since `XAUTOCLAIM` reassigns ownership to
-the calling consumer as part of reclaiming, an entry that has NEVER been
-owned by this exact instance's consumer name before will not be flagged
-over-threshold on the very sweep pass where ownership first transfers to
-it (it will be on the NEXT pass, since by then it is owned by
-`self._consumer`). This does not affect correctness for the steady-state
-"poison entry keeps failing under this same consumer" scenario the spec
-describes, and matches the task's explicit contract; tests seed pending
-entries already owned by the backend's own `consumer_name` to exercise
-the steady-state path deterministically.
+**Deviations from spec**: none as originally implemented, but see
+**POST-REVIEW UPDATE** below — the initial implementation's
+`consumername=self._consumer` filter was found to be a genuine bug, not
+just a delayed-detection nuance as originally assessed here, and has been
+fixed.
+
+**POST-REVIEW UPDATE** (2026-07-26, `code-reviewer` agent + manual repro):
+The original `xpending_range` call filtered by `consumername=self._consumer`.
+This was CRITICAL, not benign: since `XAUTOCLAIM` reclaims stale entries
+regardless of their CURRENT owner (that is the entire point — the same
+poison entry crashing a DIFFERENT consumer each time, per spec §2), an
+entry still attributed to some OTHER, stale/crashed consumer at sweep time
+was never flagged over-threshold and fell through to normal `_handle_message`
+redispatch instead of being parked — reproduced directly with a pending
+entry owned by `"other-crashed-consumer"` at `times_delivered=5` against
+`max_deliveries=2`: zero `on_dlq` calls, normal dispatch. Both existing
+unit tests happened to seed the pending entry under the SAME consumer
+name as the backend's own `consumer_name`, so this was fully masked.
+
+**Fix** (`src/navigator_eventbus/backends/redis_streams.py::_run_sweeper`):
+removed the `consumername=` filter entirely — `xpending_range`'s scope now
+matches `xautoclaim`'s own owner-agnostic reclaim scope. Added
+`test_max_deliveries_parks_entry_owned_by_other_consumer` (pending entry
+owned by a different consumer name) as a permanent regression test.
+Verified via `pytest -x -q`: 325 passed, 1 skipped. Released as `0.2.1`
+(the `0.2.0` tag predates this fix and is superseded).

@@ -298,3 +298,31 @@ intended usage pattern (stream pre-exists or a brief settle window before
 publishing) rather than a race between stream creation and first
 discovery; this matches real Redis `XREAD $` semantics (same limitation
 exists server-side) and is not a defect introduced by this task.
+
+**POST-REVIEW UPDATE** (2026-07-26, `code-reviewer` agent): two real
+issues found and fixed in this task's own surface area:
+
+1. **Recurring "$" polling race** (beyond the one-time discovery race
+   already noted above): `self._last_ids[stream]` stayed the literal
+   string `"$"` until a real entry was ever delivered, and every empty
+   poll re-sent that literal sentinel to `XREAD`. Real Redis resolves
+   `"$"` FRESH at each command invocation — an entry published in the gap
+   between one non-matching poll returning and the next one starting
+   would have its arrival permanently skipped (no PEL/redelivery in
+   broadcast mode to fall back on), for as long as a stream stays quiet
+   after discovery. Fixed with a new `_resolve_tail_id()` (uses
+   `XREVRANGE ... COUNT 1` to resolve a CONCRETE id once, at discovery
+   time, instead of the re-evaluated sentinel); `FakeStreamsRedis` gained
+   `xrevrange()`.
+2. **`publish()` from a broadcast-mode instance still created a consumer
+   group** (`_ensure_group` was unconditional), contradicting this
+   module's own "no PEL in group-less consumption" design intent — fixed
+   by skipping `_ensure_group` when `self._delivery == "broadcast"`.
+   `test_broadcast_publish_does_not_create_a_group` added as a permanent
+   regression test.
+
+Also added the spec-required `test_end_to_end_broadcast_two_instances`
+real-Redis integration test (§4/§5), which was missing from the original
+implementation. Full suite green (`pytest -x -q`: 325 passed, 1 skipped).
+Released as `0.2.1` (the `0.2.0` tag predates these fixes and is
+superseded).

@@ -231,3 +231,14 @@ FieldSync FEAT-409 Modules 6-8 should pin against `navigator-eventbus==0.2.0`
 (or `>=0.2.0`) and this exact kwarg signature.
 
 **Deviations from spec**: none.
+
+**POST-REVIEW UPDATE** (2026-07-26): a `code-reviewer` agent pass found
+one critical bug (TASK-1846's `max_deliveries` check) and several
+should-fix gaps (see TASK-1843/TASK-1846's own completion notes for
+details) that landed AFTER the `0.2.0` tag was pushed. Rather than moving
+the already-pushed `0.2.0` tag, the fixes were released as **`0.2.1`**
+(`src/navigator_eventbus/version.py` bumped again, `git tag 0.2.1`,
+pushed). **FieldSync FEAT-409 should pin against `navigator-eventbus==
+0.2.1` (or `>=0.2.1`), NOT `0.2.0`** — the kwarg signature above is
+unchanged by the fixes (no new/removed/renamed kwargs), only internal
+correctness fixes.
