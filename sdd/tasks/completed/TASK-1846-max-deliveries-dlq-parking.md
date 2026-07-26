@@ -309,10 +309,53 @@ class TestMaxDeliveriesDlqParking:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude, Sonnet)
+**Date**: 2026-07-26
+**Notes**: Added `max_deliveries: Optional[int] = None` and
+`on_dlq: Optional[Callable[..., Union[None, Awaitable[None]]]] = None`
+kwargs. `__init__` raises `ValueError` unconditionally at construction
+when `delivery == "broadcast"` and `max_deliveries is not None` (checked
+before any other assignment). `_run_sweeper` now queries
+`self._redis.xpending_range(name=stream, groupname=self._group, min="-",
+max="+", count=self._batch_count, consumername=self._consumer,
+idle=self._min_idle_time_ms)` BEFORE dispatching each `XAUTOCLAIM`-reclaimed
+entry when `max_deliveries` is set, building an `over_threshold` dict
+(`message_id -> times_delivered`) for entries whose `times_delivered >
+max_deliveries`. Over-threshold entries are routed to the new
+`_park_to_dlq(stream, msg_id, fields, times_delivered)` (decodes via
+`self._codec` — reusing TASK-1844's seam — calls `on_dlq(envelope,
+attempts=times_delivered, error=RuntimeError(...), subscriber_id=
+f"{stream}:{self._group}")`, awaiting it if it returns an awaitable
+per `asyncio.iscoroutine(result) or isinstance(result, Awaitable)`, then
+`XACK`s unconditionally) instead of `_handle_message` — excluded from the
+normal dedup-check/mark path entirely, matching the "terminal, never
+reclaimed again" contract. `on_dlq=`'s signature matches
+`DLQHandler.on_dlq`'s shape by convention only — no import of `dlq.py` or
+`core.py` was added.
 
-**Completed by**:
-**Date**:
-**Notes**:
+Extended `FakeStreamsRedis`: `xreadgroup`/`xautoclaim` now track a
+`times_delivered` counter per pending entry (`[consumer, last_delivered_at,
+times_delivered]`, incremented on each reclaim), and added
+`xpending_range(name, groupname, min, max, count, consumername, idle)`.
+Added `TestMaxDeliveriesDlqParking` with 4 tests: over-threshold entry
+parks to DLQ + never redispatched again, under-threshold entry still
+redelivers normally, `delivery="broadcast"` + `max_deliveries` raises
+`ValueError`, and default (`max_deliveries=None`) unbounded-redelivery
+behavior is unchanged.
 
-**Deviations from spec**: none
+Full suite green (`pytest -q -k "not integration"`: 315 passed, 1 skipped,
+7 deselected) and `ruff check src/navigator_eventbus/backends/redis_streams.py`
+clean. All pre-existing tests pass unmodified.
+
+**Deviations from spec**: none. One implementation note: the
+`xpending_range` query filters by `consumername=self._consumer` (per this
+task's own Pattern to Follow) — since `XAUTOCLAIM` reassigns ownership to
+the calling consumer as part of reclaiming, an entry that has NEVER been
+owned by this exact instance's consumer name before will not be flagged
+over-threshold on the very sweep pass where ownership first transfers to
+it (it will be on the NEXT pass, since by then it is owned by
+`self._consumer`). This does not affect correctness for the steady-state
+"poison entry keeps failing under this same consumer" scenario the spec
+describes, and matches the task's explicit contract; tests seed pending
+entries already owned by the backend's own `consumer_name` to exercise
+the steady-state path deterministically.

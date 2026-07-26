@@ -55,13 +55,13 @@
       "title": "max_deliveries retry-then-park (group mode) for RedisStreamsBackend",
       "feature_id": "FEAT-320",
       "feature": "redis-streams-backend-extensions",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "depends_on": [],
       "assigned_to": null,
       "started_at": "2026-07-25T01:26:56+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-1846-max-deliveries-dlq-parking.md"
+      "completed_at": "2026-07-26T00:00:41+00:00",
+      "file": "sdd/tasks/completed/TASK-1846-max-deliveries-dlq-parking.md"
     },
     {
       "id": "TASK-1847",
