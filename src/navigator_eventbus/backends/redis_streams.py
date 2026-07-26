@@ -45,7 +45,7 @@ import json
 import os
 import socket
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Literal, Optional, Protocol
+from typing import Any, Awaitable, Callable, Literal, Optional, Protocol, Union
 
 import redis.asyncio as aioredis
 from navconfig import config as nav_config
@@ -156,6 +156,18 @@ class RedisStreamsBackend:
             wins if both are set (no constructor error).
         retention_trim_interval: Seconds between ``XTRIM MINID`` passes
             (only used when ``retention`` is set).
+        max_deliveries: Optional int (FEAT-320 Module 4, ``delivery="group"``
+            only) — an entry whose Redis PEL delivery count
+            (``XPENDING ... IDLE``'s ``times_delivered``) exceeds this cap
+            is routed to ``on_dlq`` and ``XACK``ed (never reclaimed again)
+            instead of being redispatched forever. Raises ``ValueError`` at
+            construction when combined with ``delivery="broadcast"``
+            (there is no PEL in group-less consumption).
+        on_dlq: Optional ``Callable[..., Union[None, Awaitable[None]]]``
+            invoked as ``on_dlq(envelope, *, attempts, error, subscriber_id)``
+            for an entry parked by ``max_deliveries`` — signature matches
+            :meth:`navigator_eventbus.dlq.DLQHandler.on_dlq` by convention
+            (duck-typed; this module does not import ``dlq.py``).
 
     Note:
         Exactly-one-trimmer-per-stream (whether via ``maxlen`` or
@@ -193,10 +205,20 @@ class RedisStreamsBackend:
         streams: Optional[list[str]] = None,
         retention: Optional[timedelta] = None,
         retention_trim_interval: float = 60.0,
+        max_deliveries: Optional[int] = None,
+        on_dlq: Optional[
+            Callable[..., Union[None, Awaitable[None]]]
+        ] = None,
     ) -> None:
         if redis_url is None and client is None:
             raise ValueError(
                 "RedisStreamsBackend requires a redis_url or an injected client"
+            )
+        if delivery == "broadcast" and max_deliveries is not None:
+            raise ValueError(
+                "max_deliveries is not supported with delivery='broadcast' "
+                "— there is no PEL (pending entries list) in group-less "
+                "consumption to bound redeliveries against"
             )
         self.redis_url = redis_url
         self._client = client  # injected — not owned
@@ -226,6 +248,8 @@ class RedisStreamsBackend:
         self._explicit_streams = streams
         self._retention = retention
         self._retention_trim_interval = retention_trim_interval
+        self._max_deliveries = max_deliveries
+        self._on_dlq = on_dlq
 
         self._on_envelope: Optional[OnEnvelope] = None
         self._consumer_task: Optional[asyncio.Task[None]] = None
@@ -540,12 +564,34 @@ class RedisStreamsBackend:
             )
 
     async def _run_sweeper(self) -> None:
-        """Periodic XAUTOCLAIM pass reclaiming stale pending entries."""
+        """Periodic XAUTOCLAIM pass reclaiming stale pending entries.
+
+        When ``max_deliveries`` is set (FEAT-320 Module 4), entries about
+        to be reclaimed are first checked against their Redis PEL delivery
+        count (``XPENDING ... IDLE``'s ``times_delivered``) — those
+        exceeding the cap are parked to ``on_dlq`` and ``XACK``ed
+        (terminal, never reclaimed again) instead of being redispatched.
+        """
         while self._running:
             try:
                 await asyncio.sleep(self._autoclaim_interval)
                 await self._ensure_connection()
                 for stream in list(self._streams):
+                    if self._max_deliveries is not None:
+                        pending = await self._redis.xpending_range(  # type: ignore[union-attr]
+                            name=stream, groupname=self._group,
+                            min="-", max="+", count=self._batch_count,
+                            consumername=self._consumer,
+                            idle=self._min_idle_time_ms,
+                        )
+                        over_threshold = {
+                            p["message_id"]: p["times_delivered"]
+                            for p in pending
+                            if p["times_delivered"] > self._max_deliveries
+                        }
+                    else:
+                        over_threshold = {}
+
                     result = await self._redis.xautoclaim(  # type: ignore[union-attr]
                         stream,
                         self._group,
@@ -557,6 +603,11 @@ class RedisStreamsBackend:
                     # redis-py returns [next_start, messages(, deleted_ids)]
                     messages = result[1] if result and len(result) > 1 else []
                     for msg_id, fields in messages:
+                        if msg_id in over_threshold:
+                            await self._park_to_dlq(
+                                stream, msg_id, fields, over_threshold[msg_id]
+                            )
+                            continue
                         self.logger.info(
                             "XAUTOCLAIM reclaimed %s from %s", msg_id, stream
                         )
@@ -567,6 +618,41 @@ class RedisStreamsBackend:
                 if not self._running:
                     return
                 self.logger.warning("Streams sweeper error: %s", exc)
+
+    async def _park_to_dlq(
+        self, stream: str, msg_id: Any, fields: dict[str, Any], times_delivered: int
+    ) -> None:
+        """Terminal handling for an entry that exceeded ``max_deliveries``.
+
+        Never redispatched through ``on_envelope`` (excluded from the
+        normal dedup-check/mark path too — it is being parked, not
+        processed), always ``XACK``ed so it is never reclaimed again.
+        """
+        try:
+            envelope = self._codec.decode(fields)
+        except Exception as exc:  # noqa: BLE001 — poison entry, ack and drop
+            self.logger.error(
+                "Undecodable over-threshold entry %s on %s dropped: %s",
+                msg_id, stream, exc,
+            )
+            await self._ack(stream, msg_id)
+            return
+        if self._on_dlq is not None:
+            try:
+                result = self._on_dlq(
+                    envelope,
+                    attempts=times_delivered,
+                    error=RuntimeError(
+                        f"exceeded max_deliveries={self._max_deliveries} "
+                        "without ack"
+                    ),
+                    subscriber_id=f"{stream}:{self._group}",
+                )
+                if asyncio.iscoroutine(result) or isinstance(result, Awaitable):
+                    await result
+            except Exception:  # noqa: BLE001 — DLQ failures isolated too
+                self.logger.exception("on_dlq callback failed for %s", msg_id)
+        await self._ack(stream, msg_id)
 
     async def _run_retention_trimmer(self) -> None:
         """Periodic ``XTRIM ... MINID`` pass — alternative to inline

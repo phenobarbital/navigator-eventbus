@@ -97,7 +97,8 @@ class FakeStreamsRedis:
             if new:
                 now = time.monotonic()
                 for msg_id, _ in new:
-                    g["pending"][msg_id] = [consumer, now]
+                    # [consumer, last_delivered_at, times_delivered]
+                    g["pending"][msg_id] = [consumer, now, 1]
                 g["delivered"] += len(new)
                 results.append((stream, list(new)))
         if not results and block:
@@ -124,11 +125,42 @@ class FakeStreamsRedis:
         for msg_id, meta in list(g["pending"].items()):
             idle_ms = (now - meta[1]) * 1000
             if idle_ms >= min_idle_time and msg_id in by_id:
-                g["pending"][msg_id] = [consumer, now]
+                times_delivered = (meta[2] if len(meta) > 2 else 1) + 1
+                g["pending"][msg_id] = [consumer, now, times_delivered]
                 claimed.append((msg_id, by_id[msg_id]))
                 if count and len(claimed) >= count:
                     break
         return ["0-0", claimed, []]
+
+    async def xpending_range(
+        self, name, groupname, min="-", max="+", count=None,
+        consumername=None, idle=None,
+    ):
+        """Returns [{"message_id", "consumer", "time_since_delivered",
+        "times_delivered"}, ...] — times_delivered increments each time
+        xautoclaim reclaims the same id (see xautoclaim above)."""
+        g = self.groups.get((name, groupname))
+        if g is None:
+            return []
+        now = time.monotonic()
+        out = []
+        for msg_id, meta in g["pending"].items():
+            consumer, last_delivered_at = meta[0], meta[1]
+            times_delivered = meta[2] if len(meta) > 2 else 1
+            idle_ms = (now - last_delivered_at) * 1000
+            if idle is not None and idle_ms < idle:
+                continue
+            if consumername is not None and consumer != consumername:
+                continue
+            out.append({
+                "message_id": msg_id,
+                "consumer": consumer,
+                "time_since_delivered": idle_ms,
+                "times_delivered": times_delivered,
+            })
+            if count and len(out) >= count:
+                break
+        return out
 
     async def set(self, key, value, nx=False, ex=None):
         if nx and key in self.kv:
@@ -792,6 +824,117 @@ class TestTimeBasedRetention:
         assert backend._retention_task is not None
         await backend.close()
         assert backend._retention_task is None
+
+
+# ---------------------------------------------------------------------------
+# FEAT-320 Module 4 — max_deliveries retry-then-park (group mode)
+# ---------------------------------------------------------------------------
+
+
+class TestMaxDeliveriesDlqParking:
+    async def test_max_deliveries_parks_to_dlq_and_acks(self, fake_redis):
+        """An entry reclaimed > N times is routed to on_dlq and acked, and
+        is NOT reclaimed/dispatched again afterward."""
+        env = make_envelope("app.poison")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env.to_dict())}
+        )
+        await fake_redis.xgroup_create("evb:stream:app", "evb-bus", id="0")
+        g = fake_redis.groups[("evb:stream:app", "evb-bus")]
+        g["delivered"] = 1
+        # Already delivered 3 times to THIS consumer, long idle (stale).
+        g["pending"]["1-0"] = ["test-consumer", time.monotonic() - 10, 3]
+
+        dlq_calls: list = []
+
+        async def on_dlq(envelope, *, attempts, error, subscriber_id):
+            dlq_calls.append((envelope, attempts, error, subscriber_id))
+
+        backend = make_backend(fake_redis, max_deliveries=2, on_dlq=on_dlq)
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(dlq_calls) == 1)
+        assert received == []  # never dispatched normally
+        envelope, attempts, error, subscriber_id = dlq_calls[0]
+        assert envelope == env
+        assert attempts == 3
+        assert isinstance(error, RuntimeError)
+        assert subscriber_id == "evb:stream:app:evb-bus"
+        await wait_until(
+            lambda: ("evb:stream:app", "evb-bus", "1-0") in fake_redis.acked
+        )
+        assert g["pending"] == {}
+
+        # Give the sweeper another pass — must NOT reclaim/dispatch again.
+        await asyncio.sleep(0.15)
+        assert len(dlq_calls) == 1
+        assert received == []
+        await backend.close()
+
+    async def test_max_deliveries_under_threshold_still_redelivers(self, fake_redis):
+        """An entry reclaimed <= N times dispatches normally."""
+        env = make_envelope("app.retryok")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env.to_dict())}
+        )
+        await fake_redis.xgroup_create("evb:stream:app", "evb-bus", id="0")
+        g = fake_redis.groups[("evb:stream:app", "evb-bus")]
+        g["delivered"] = 1
+        g["pending"]["1-0"] = ["test-consumer", time.monotonic() - 10, 1]
+
+        dlq_calls: list = []
+
+        async def on_dlq(envelope, **kwargs):
+            dlq_calls.append(envelope)
+
+        backend = make_backend(fake_redis, max_deliveries=2, on_dlq=on_dlq)
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env
+        assert dlq_calls == []
+        await backend.close()
+
+    def test_max_deliveries_with_broadcast_raises(self):
+        """delivery='broadcast' + max_deliveries=N raises ValueError."""
+        with pytest.raises(ValueError):
+            RedisStreamsBackend(
+                "redis://localhost:6379/0",
+                delivery="broadcast",
+                max_deliveries=3,
+            )
+
+    async def test_default_sweeper_unbounded_unchanged(self, fake_redis):
+        """Omitting max_deliveries= keeps today's unbounded-redelivery behavior."""
+        env = make_envelope("app.unbounded")
+        await fake_redis.xadd(
+            "evb:stream:app", {"envelope": json.dumps(env.to_dict())}
+        )
+        await fake_redis.xgroup_create("evb:stream:app", "evb-bus", id="0")
+        g = fake_redis.groups[("evb:stream:app", "evb-bus")]
+        g["delivered"] = 1
+        # A huge times_delivered count — with max_deliveries=None (default)
+        # this must still redeliver normally, unbounded, exactly as today.
+        g["pending"]["1-0"] = ["dead-consumer", time.monotonic() - 10, 50]
+
+        backend = make_backend(fake_redis)  # max_deliveries=None (default)
+        received: list[EventEnvelope] = []
+
+        async def consumer(envelope):
+            received.append(envelope)
+
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(received) == 1)
+        assert received[0] == env
+        await backend.close()
 
 
 # ---------------------------------------------------------------------------
