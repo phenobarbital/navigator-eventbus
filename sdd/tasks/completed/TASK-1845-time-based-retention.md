@@ -193,10 +193,30 @@ class TestTimeBasedRetention:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude, Sonnet)
+**Date**: 2026-07-26
+**Notes**: Added `retention: Optional[timedelta] = None` and
+`retention_trim_interval: float = 60.0` kwargs. `publish()` now builds a
+`trim_kwargs` dict — empty when `self._retention is not None`, otherwise
+`{"maxlen": self._maxlen, "approximate": True}` (today's exact call) —
+and spreads it into the `XADD` call. `start_consumer()` spawns
+`self._retention_task` (running `_run_retention_trimmer`, mirroring
+`_run_sweeper`'s periodic-task shape) only when `retention` is set;
+`close()` cancels it alongside whichever consumer/sweeper/broadcast tasks
+are running, guarded the same way. `__init__` logs a DEBUG line (not a
+raise) when both `retention` and a non-default expectation around
+`maxlen` coexist — `retention` silently wins per the spec.
 
-**Completed by**:
-**Date**:
-**Notes**:
+Extended `FakeStreamsRedis` with `xtrim(name, minid, approximate)`
+(records calls in `xtrim_calls` and actually drops entries below the
+`minid` threshold, reusing the `_entry_seq` helper from TASK-1843).
+Added `TestTimeBasedRetention` with 4 tests: cadence + correctly-derived
+`MINID` cutoff, `maxlen`/`approximate` omitted from `XADD` when retention
+is set, default `maxlen` behavior unchanged, and clean task cancellation
+on `close()`.
 
-**Deviations from spec**: none
+Full suite green (`pytest -q -k "not integration"`: 311 passed, 1 skipped,
+7 deselected) and `ruff check src/navigator_eventbus/backends/redis_streams.py`
+clean. All pre-existing tests pass unmodified.
+
+**Deviations from spec**: none.

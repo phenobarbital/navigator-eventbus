@@ -4,7 +4,7 @@ __title__ = "navigator-eventbus"
 __description__ = (
     "Standalone async event bus + generic hooks fabric "
 )
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 __author__ = "Jesus Lara"
 __author_email__ = "jesuslara@phenobarbital.info"
 __license__ = "MIT"

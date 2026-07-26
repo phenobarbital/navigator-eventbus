@@ -41,6 +41,7 @@ before events under its namespace are accepted (`HookEvent.hook_type` validator)
 | `agent.*` | ai-parrot (`parrot.core.events.lifecycle`) | reserved |
 | `task.*` / `flow.*` | Flowtask | reserved |
 | `auth.*` | navigator-auth | reserved |
+| `fieldsync.*` | FieldSync (`../fieldsync`, FEAT-409) | reserved — consumes `RedisStreamsBackend` via its own `codec=`/`stream_key_fn=`/`streams=` seams (FEAT-320) rather than a parallel transport |
 
 ## Registering a new namespace
 

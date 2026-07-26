@@ -219,10 +219,35 @@ class TestCodecAndStreamNamingSeams:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude, Sonnet)
+**Date**: 2026-07-26
+**Notes**: Added a `Codec` `Protocol` (encode/decode) + `_DefaultCodec`
+(preserves today's exact `{"envelope": json.dumps(...)}` shape) at module
+level in `redis_streams.py`. `self._codec = codec or _DefaultCodec()` set
+once in `__init__`; `publish()` now calls `self._codec.encode(envelope)`,
+and both `_handle_message` (group mode) and `_dispatch_broadcast_entry`
+(broadcast mode, landed in TASK-1843) call `self._codec.decode(fields)` —
+removed the `_decode_envelope` helper TASK-1843 had extracted, replacing
+both call sites directly with the codec seam per this task's contract.
 
-**Completed by**:
-**Date**:
-**Notes**:
+`_stream_for` now checks `self._stream_key_fn` first, falling back to the
+unchanged `<stream_prefix><topic-class>` sharding. `_refresh_streams` and
+`_refresh_streams_broadcast` both no-op immediately when
+`self._explicit_streams is not None` (SCAN bypass); `start_consumer()`
+seeds `self._streams`/`self._last_ids` (broadcast) or joins groups
+(group mode, via `_ensure_group`) from the explicit `streams=` list ONCE,
+and logs a `logger.warning` (not a raise) when `stream_key_fn` is set
+without `streams`.
 
-**Deviations from spec**: none
+TASK-1843 (broadcast mode) had already landed, so
+`test_stream_key_fn_and_broadcast_compose` was written directly (not
+deferred) — added to `TestCodecAndStreamNamingSeams` alongside
+`test_custom_codec_roundtrip`, `test_custom_stream_key_fn_with_explicit_streams`,
+`test_stream_key_fn_without_streams_warns`, and
+`test_default_codec_and_naming_unchanged`.
+
+Full suite green (`pytest -q -k "not integration"`: 307 passed, 1 skipped,
+7 deselected) and `ruff check src/navigator_eventbus/backends/redis_streams.py`
+clean. All pre-existing tests pass unmodified.
+
+**Deviations from spec**: none.

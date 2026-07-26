@@ -309,10 +309,67 @@ class TestMaxDeliveriesDlqParking:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude, Sonnet)
+**Date**: 2026-07-26
+**Notes**: Added `max_deliveries: Optional[int] = None` and
+`on_dlq: Optional[Callable[..., Union[None, Awaitable[None]]]] = None`
+kwargs. `__init__` raises `ValueError` unconditionally at construction
+when `delivery == "broadcast"` and `max_deliveries is not None` (checked
+before any other assignment). `_run_sweeper` now queries
+`self._redis.xpending_range(name=stream, groupname=self._group, min="-",
+max="+", count=self._batch_count, consumername=self._consumer,
+idle=self._min_idle_time_ms)` BEFORE dispatching each `XAUTOCLAIM`-reclaimed
+entry when `max_deliveries` is set, building an `over_threshold` dict
+(`message_id -> times_delivered`) for entries whose `times_delivered >
+max_deliveries`. Over-threshold entries are routed to the new
+`_park_to_dlq(stream, msg_id, fields, times_delivered)` (decodes via
+`self._codec` — reusing TASK-1844's seam — calls `on_dlq(envelope,
+attempts=times_delivered, error=RuntimeError(...), subscriber_id=
+f"{stream}:{self._group}")`, awaiting it if it returns an awaitable
+per `asyncio.iscoroutine(result) or isinstance(result, Awaitable)`, then
+`XACK`s unconditionally) instead of `_handle_message` — excluded from the
+normal dedup-check/mark path entirely, matching the "terminal, never
+reclaimed again" contract. `on_dlq=`'s signature matches
+`DLQHandler.on_dlq`'s shape by convention only — no import of `dlq.py` or
+`core.py` was added.
 
-**Completed by**:
-**Date**:
-**Notes**:
+Extended `FakeStreamsRedis`: `xreadgroup`/`xautoclaim` now track a
+`times_delivered` counter per pending entry (`[consumer, last_delivered_at,
+times_delivered]`, incremented on each reclaim), and added
+`xpending_range(name, groupname, min, max, count, consumername, idle)`.
+Added `TestMaxDeliveriesDlqParking` with 4 tests: over-threshold entry
+parks to DLQ + never redispatched again, under-threshold entry still
+redelivers normally, `delivery="broadcast"` + `max_deliveries` raises
+`ValueError`, and default (`max_deliveries=None`) unbounded-redelivery
+behavior is unchanged.
 
-**Deviations from spec**: none
+Full suite green (`pytest -q -k "not integration"`: 315 passed, 1 skipped,
+7 deselected) and `ruff check src/navigator_eventbus/backends/redis_streams.py`
+clean. All pre-existing tests pass unmodified.
+
+**Deviations from spec**: none as originally implemented, but see
+**POST-REVIEW UPDATE** below — the initial implementation's
+`consumername=self._consumer` filter was found to be a genuine bug, not
+just a delayed-detection nuance as originally assessed here, and has been
+fixed.
+
+**POST-REVIEW UPDATE** (2026-07-26, `code-reviewer` agent + manual repro):
+The original `xpending_range` call filtered by `consumername=self._consumer`.
+This was CRITICAL, not benign: since `XAUTOCLAIM` reclaims stale entries
+regardless of their CURRENT owner (that is the entire point — the same
+poison entry crashing a DIFFERENT consumer each time, per spec §2), an
+entry still attributed to some OTHER, stale/crashed consumer at sweep time
+was never flagged over-threshold and fell through to normal `_handle_message`
+redispatch instead of being parked — reproduced directly with a pending
+entry owned by `"other-crashed-consumer"` at `times_delivered=5` against
+`max_deliveries=2`: zero `on_dlq` calls, normal dispatch. Both existing
+unit tests happened to seed the pending entry under the SAME consumer
+name as the backend's own `consumer_name`, so this was fully masked.
+
+**Fix** (`src/navigator_eventbus/backends/redis_streams.py::_run_sweeper`):
+removed the `consumername=` filter entirely — `xpending_range`'s scope now
+matches `xautoclaim`'s own owner-agnostic reclaim scope. Added
+`test_max_deliveries_parks_entry_owned_by_other_consumer` (pending entry
+owned by a different consumer name) as a permanent regression test.
+Verified via `pytest -x -q`: 325 passed, 1 skipped. Released as `0.2.1`
+(the `0.2.0` tag predates this fix and is superseded).
