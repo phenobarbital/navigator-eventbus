@@ -5,7 +5,7 @@
   "type": "feature",
   "base_branch": "main",
   "created_at": "2026-07-25T01:18:34+00:00",
-  "completed_at": null,
+  "completed_at": "2026-07-26T00:07:36+00:00",
   "tasks": [
     {
       "id": "TASK-1843",
@@ -69,7 +69,7 @@
       "title": "TOPICS.md registration + release cut",
       "feature_id": "FEAT-320",
       "feature": "redis-streams-backend-extensions",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "depends_on": [
         "TASK-1843",
@@ -79,8 +79,8 @@
       ],
       "assigned_to": null,
       "started_at": "2026-07-25T01:26:56+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-1847-topics-registration-and-release.md"
+      "completed_at": "2026-07-26T00:07:36+00:00",
+      "file": "sdd/tasks/completed/TASK-1847-topics-registration-and-release.md"
     }
   ]
 }

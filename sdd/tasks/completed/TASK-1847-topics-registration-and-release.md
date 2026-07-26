@@ -148,10 +148,86 @@ ruff check src/
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude, Sonnet)
+**Date**: 2026-07-26
+**Notes**: Verified TASK-1843/1844/1845/1846 were all in `sdd/tasks/completed/`
+before starting. Registered `fieldsync.*` in `TOPICS.md` under "Reserved
+namespaces" (matching the existing 3-column `| Namespace | Owner | Status |`
+table exactly). Confirmed via `git tag` that `main`'s released version at
+the start of this task was `0.1.0` (with `0.1.0rc1`/`0.1.0rc2` pre-release
+tags) — bumped `src/navigator_eventbus/version.py`'s `__version__` from
+`"0.1.0"` to **`"0.2.0"`** (MINOR bump per semver — additive, fully
+backward-compatible new capabilities, no breaking changes to existing
+call shapes).
 
-**Completed by**:
-**Date**:
-**Notes**: (MUST include: released version, exact final kwarg signatures of delivery/codec/stream_key_fn/streams/retention/retention_trim_interval/max_deliveries/on_dlq)
+Ran the full regression sweep together (not just per-task): `pytest -x -q`
+(no `-k` filter) → **322 passed, 1 skipped** (the skip is a pre-existing,
+unrelated environment gap — `tests/brokers/test_serializers.py` skips
+without the optional `msgpack` package installed) — includes the real-Redis
+`test_end_to_end_streams_two_consumers` integration test, which ran and
+passed against a reachable local Redis in this environment. Fixed one
+small, obviously-correct, in-scope regression this task's own version
+bump introduced: `tests/test_package.py::test_package_imports` hard-coded
+`__version__ == "0.1.0"` — updated to `"0.2.0"`.
 
-**Deviations from spec**: none
+`ruff check src/navigator_eventbus/backends/redis_streams.py` (this
+feature's actual surface area): **clean**. `ruff check src/` (project-wide):
+**8 pre-existing errors, all in files this feature never touched**
+(`src/navigator_eventbus/__init__.py` — 6 unrelated lint findings;
+`src/navigator_eventbus/brokers/rabbitmq/__init__.py` and
+`brokers/rabbitmq/bridge.py` — import-order findings). Verified via
+`git diff main -- <those files>` that they are byte-identical to `main`
+— these are pre-existing issues from before this feature branch, NOT a
+regression introduced by TASK-1843/1844/1845/1846 or this task. Per this
+task's own "NOT in scope: any new capability/behavior" + "fix here only
+if introduced by the four upstream tasks" instruction, these are flagged
+here as a pre-existing, out-of-scope follow-up rather than fixed (avoiding
+scope creep into unrelated modules).
+
+Tagged the release: `git tag 0.2.0` (plain version string, matching the
+repo's existing `0.1.0`/`0.1.0rc1`/`0.1.0rc2` tagging convention — no `v`
+prefix). Tag created on this feature branch's tip commit; will become
+reachable from `main` once this branch merges.
+
+**Final released version**: `0.2.0`
+
+**Final `RedisStreamsBackend.__init__` signature** (verbatim, all new
+FEAT-320 kwargs at the bottom, existing kwargs above unchanged):
+
+```python
+def __init__(
+    self,
+    redis_url: Optional[str] = None,
+    *,
+    client: Optional[Any] = None,
+    group: Optional[str] = None,
+    consumer_name: Optional[str] = None,
+    stream_prefix: Optional[str] = None,
+    dedup_prefix: Optional[str] = None,
+    dedup_ttl: int = 86_400,
+    block_ms: int = 1_000,
+    batch_count: int = 32,
+    min_idle_time_ms: int = 60_000,
+    autoclaim_interval: float = 30.0,
+    maxlen: int = 100_000,
+    stream_refresh_interval: float = 10.0,
+    reconnect_base_delay: float = 0.5,
+    reconnect_max_delay: float = 30.0,
+    # --- FEAT-320 (this feature) ---
+    delivery: Literal["group", "broadcast"] = "group",
+    codec: Optional["Codec"] = None,
+    stream_key_fn: Optional[Callable[[str], str]] = None,
+    streams: Optional[list[str]] = None,
+    retention: Optional[timedelta] = None,
+    retention_trim_interval: float = 60.0,
+    max_deliveries: Optional[int] = None,
+    on_dlq: Optional[
+        Callable[..., Union[None, Awaitable[None]]]
+    ] = None,
+) -> None: ...
+```
+
+FieldSync FEAT-409 Modules 6-8 should pin against `navigator-eventbus==0.2.0`
+(or `>=0.2.0`) and this exact kwarg signature.
+
+**Deviations from spec**: none.
