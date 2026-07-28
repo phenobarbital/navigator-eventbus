@@ -229,10 +229,57 @@ When you pick up this task:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude Sonnet)
+**Date**: 2026-07-28
+**Notes**: Implemented all 13 spec §4 unit test cases plus one extra
+(`test_composite_backend_satisfies_transport_backend_protocol`, required
+separately by this task's own Acceptance Criteria) in
+`tests/test_composite_backend.py`. Patches
+`navigator_eventbus.backends.composite.RedisStreamsBackend` with a
+`FakeInternalBackend` factory (records constructor kwargs, exposes
+`AsyncMock` `publish`/`start_consumer`/`close`) so no live Redis or
+`redis.asyncio` connection is ever touched — `RedisStreamsBackend`'s own
+Streams semantics are already covered by `tests/test_backends_streams.py`.
+Used the exact `channels` fixture from spec §4 (`_noop_handler` on all
+three channels) for the orchestration-level tests (creation, client
+sharing, publish routing, start/stop lifecycle, failure isolation,
+dedup-prefix computation), and built dedicated per-test channel lists
+with distinguishable `AsyncMock` callbacks for the behavioral tests
+(broadcast-vs-group callback wiring, two-groups isolation, stream subset,
+per-channel `on_dlq`) so assertions can pin down exactly which callback
+fired. All 14 tests pass (`pytest tests/test_composite_backend.py -v`);
+full suite (`pytest tests/ -m "not integration"`) — 338 passed, 0
+regressions. `ruff check tests/test_composite_backend.py` — clean.
 
-**Completed by**: <session or agent ID>
-**Date**: YYYY-MM-DD
-**Notes**: What was implemented, any deviations from scope, issues encountered.
+**Deviations from spec**: none — `test_dedup_is_per_group` and
+`test_on_dlq_per_channel` verify the *inputs* `CompositeBackend` computes
+and hands to `RedisStreamsBackend` (per-group `dedup_prefix`, per-channel
+`on_dlq`) rather than end-to-end Redis dedup behaviour, since actual
+dedup enforcement lives inside `RedisStreamsBackend` (out of scope here,
+already covered by `tests/test_backends_streams.py`).
 
-**Deviations from spec**: none | describe if any
+---
+
+### Code Review Follow-up (post-completion)
+
+Per the feature-level code review (see TASK-1848's Completion Note for
+full findings), `tests/test_composite_backend.py` was updated in the
+same follow-up commit
+(`fix(eventbus-composite-backend): address code review findings for
+FEAT-430`):
+
+- Rewrote `test_broadcast_channel_receives_all_entries`: the broadcast
+  channel's callback is no longer BusCore's transport callback by
+  identity — it is now a chaining wrapper, so the test asserts BOTH the
+  transport callback AND the channel's own (now distinguishable
+  `AsyncMock`) `on_envelope` fire independently for every entry.
+- Added `test_channel_streams_stored_as_immutable_tuple` (Channel-level).
+- Added `test_composite_rejects_multiple_broadcast_channels`.
+- Added `test_group_channel_falls_back_to_common_max_deliveries_and_on_dlq`.
+- Added `test_common_group_kwarg_is_dropped_not_forwarded`.
+- Added `test_start_consumer_logs_when_all_channels_fail` (uses
+  `caplog`, triggers backend creation via `publish()` first so
+  `side_effect` can be attached before `start_consumer()` runs).
+
+19/19 tests pass (`pytest tests/test_composite_backend.py -v`); full
+suite 347 passed, 0 regressions. `ruff check` clean.

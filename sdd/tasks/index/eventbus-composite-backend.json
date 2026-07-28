@@ -14,16 +14,16 @@
       "feature_id": "FEAT-430",
       "feature": "eventbus-composite-backend",
       "spec": "sdd/specs/eventbus-composite-backend.spec.md",
-      "status": "pending",
+      "status": "done",
       "priority": "high",
       "effort": "L",
       "depends_on": [],
       "parallel": false,
       "parallelism_notes": "Foundation task — all other tasks depend on it.",
       "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-1848-composite-backend-core.md"
+      "started_at": "2026-07-28T21:24:07+00:00",
+      "completed_at": "2026-07-28T21:39:46+00:00",
+      "file": "sdd/tasks/completed/TASK-1848-composite-backend-core.md"
     },
     {
       "id": "TASK-1849",
@@ -32,16 +32,18 @@
       "feature_id": "FEAT-430",
       "feature": "eventbus-composite-backend",
       "spec": "sdd/specs/eventbus-composite-backend.spec.md",
-      "status": "pending",
+      "status": "done",
       "priority": "high",
       "effort": "M",
-      "depends_on": ["TASK-1848"],
+      "depends_on": [
+        "TASK-1848"
+      ],
       "parallel": true,
       "parallelism_notes": "Shares no files with TASK-1850 — both depend only on TASK-1848. Can run in parallel with TASK-1850 in separate worktrees.",
       "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-1849-composite-backend-unit-tests.md"
+      "started_at": "2026-07-28T21:24:07+00:00",
+      "completed_at": "2026-07-28T21:43:45+00:00",
+      "file": "sdd/tasks/completed/TASK-1849-composite-backend-unit-tests.md"
     },
     {
       "id": "TASK-1850",
@@ -50,16 +52,18 @@
       "feature_id": "FEAT-430",
       "feature": "eventbus-composite-backend",
       "spec": "sdd/specs/eventbus-composite-backend.spec.md",
-      "status": "pending",
+      "status": "done",
       "priority": "medium",
       "effort": "M",
-      "depends_on": ["TASK-1848"],
+      "depends_on": [
+        "TASK-1848"
+      ],
       "parallel": true,
       "parallelism_notes": "Shares no files with TASK-1849 — both depend only on TASK-1848. Can run in parallel with TASK-1849 in separate worktrees.",
       "assigned_to": null,
-      "started_at": null,
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-1850-composite-backend-integration-tests.md"
+      "started_at": "2026-07-28T21:24:07+00:00",
+      "completed_at": "2026-07-28T22:46:27+00:00",
+      "file": "sdd/tasks/completed/TASK-1850-composite-backend-integration-tests.md"
     }
   ]
 }

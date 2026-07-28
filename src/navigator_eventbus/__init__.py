@@ -14,6 +14,7 @@ subscribers, etc.), independent of the bus core above. See
 `sdd/specs/eventbus-lifecycle-extraction.spec.md`.
 """
 from navigator_eventbus import lifecycle
+from navigator_eventbus.backends.composite import CompositeBackend
 from navigator_eventbus.core import BackpressureError, BusClosedError, BusCore
 from navigator_eventbus.dlq import DLQHandler
 from navigator_eventbus.envelope import EventEnvelope, Severity
@@ -34,6 +35,7 @@ __all__ = [
     "BackpressureError",
     "BusClosedError",
     "BusCore",
+    "CompositeBackend",
     "DLQHandler",
     "Event",
     "EventBus",
