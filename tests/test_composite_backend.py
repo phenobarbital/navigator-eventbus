@@ -112,6 +112,20 @@ class TestChannel:
                 max_deliveries=5,
             )
 
+    def test_channel_streams_stored_as_immutable_tuple(self) -> None:
+        """Code review finding: a frozen ``Channel`` holding a plain
+        ``list`` for ``streams`` could still have its effective stream
+        subset mutated via an aliased reference. ``__post_init__``
+        defensively copies it into a ``tuple``."""
+        mutable_streams = ["a", "b"]
+        channel = Channel(
+            name="c", delivery="broadcast", on_envelope=_noop_handler,
+            streams=mutable_streams,
+        )
+        assert channel.streams == ("a", "b")
+        mutable_streams.append("c")
+        assert channel.streams == ("a", "b")  # unaffected by the mutation
+
 
 # ---------------------------------------------------------------------------
 # CompositeBackend orchestration
@@ -123,6 +137,21 @@ class TestCompositeBackend:
         self, composite
     ) -> None:
         assert isinstance(composite, TransportBackend)
+
+    def test_composite_rejects_multiple_broadcast_channels(
+        self, shared_client
+    ) -> None:
+        """Code review finding: >1 broadcast channel has no well-defined
+        way to each independently receive BusCore's single transport
+        callback — reject it eagerly at construction instead of silently
+        forcing all of them onto whichever one start_consumer() happens
+        to pick."""
+        channels = [
+            Channel(name="b1", delivery="broadcast", on_envelope=_noop_handler),
+            Channel(name="b2", delivery="broadcast", on_envelope=_noop_handler),
+        ]
+        with pytest.raises(ValueError, match="at most one delivery='broadcast'"):
+            CompositeBackend(client=shared_client, channels=channels)
 
     async def test_composite_creates_internal_backends(
         self, composite, created_backends
@@ -201,14 +230,29 @@ class TestCompositeBackend:
             backend.start_consumer.assert_awaited_once()
 
     async def test_broadcast_channel_receives_all_entries(
-        self, composite, created_backends
+        self, shared_client, patched_redis_streams, created_backends
     ) -> None:
+        # Distinguishable callback so we can assert the broadcast
+        # channel's OWN on_envelope also fires — start_consumer() chains
+        # BusCore's transport_callback with it, it does not replace it
+        # (code review finding: silently discarding a broadcast channel's
+        # on_envelope is a footgun for direct — non-BusCore — callers).
+        broadcast_on_envelope = AsyncMock()
+        channels = [
+            Channel(
+                name="broadcast", delivery="broadcast", on_envelope=broadcast_on_envelope
+            ),
+        ]
+        composite = CompositeBackend(client=shared_client, channels=channels)
+
         transport_callback = AsyncMock()
         await composite.start_consumer(transport_callback)
 
         broadcast_backend = created_backends[0]
-        broadcast_backend.start_consumer.assert_awaited_once_with(transport_callback)
         wired_callback = broadcast_backend.start_consumer.call_args.args[0]
+        # The wired callback is a chaining wrapper, not transport_callback
+        # itself — both underlying callbacks still fire independently.
+        assert wired_callback is not transport_callback
 
         envelope_1, envelope_2 = make_envelope(), make_envelope()
         await wired_callback(envelope_1)
@@ -217,6 +261,9 @@ class TestCompositeBackend:
         assert transport_callback.await_count == 2
         transport_callback.assert_any_await(envelope_1)
         transport_callback.assert_any_await(envelope_2)
+        assert broadcast_on_envelope.await_count == 2
+        broadcast_on_envelope.assert_any_await(envelope_1)
+        broadcast_on_envelope.assert_any_await(envelope_2)
 
     async def test_group_channel_receives_each_entry_once(self) -> None:
         ledger_callback = AsyncMock()
@@ -360,3 +407,78 @@ class TestCompositeBackend:
         assert ledger_backend.init_kwargs["on_dlq"] is not push_backend.init_kwargs[
             "on_dlq"
         ]
+
+    async def test_group_channel_falls_back_to_common_max_deliveries_and_on_dlq(
+        self, shared_client, patched_redis_streams, created_backends
+    ) -> None:
+        """Code review finding: max_deliveries=/on_dlq= should follow the
+        same "channel overrides, else composite-wide default" precedence
+        as codec= — a common_backend_kwargs default must not be silently
+        clobbered by an unset (None) per-channel value."""
+        common_dlq = AsyncMock()
+        channels = [
+            Channel(name="broadcast", delivery="broadcast", on_envelope=_noop_handler),
+            Channel(  # no max_deliveries=/on_dlq= override -> composite default
+                name="audit-ledger", delivery="group", on_envelope=_noop_handler,
+            ),
+            Channel(  # explicit override -> channel value wins
+                name="push-alerts", delivery="group", on_envelope=_noop_handler,
+                max_deliveries=3, on_dlq=AsyncMock(),
+            ),
+        ]
+        composite = CompositeBackend(
+            client=shared_client,
+            channels=channels,
+            max_deliveries=7,
+            on_dlq=common_dlq,
+        )
+        await composite.start_consumer(AsyncMock())
+
+        _broadcast_backend, ledger_backend, push_backend = created_backends
+        assert ledger_backend.init_kwargs["max_deliveries"] == 7
+        assert ledger_backend.init_kwargs["on_dlq"] is common_dlq
+        assert push_backend.init_kwargs["max_deliveries"] == 3
+        assert push_backend.init_kwargs["on_dlq"] is not common_dlq
+
+    async def test_common_group_kwarg_is_dropped_not_forwarded(
+        self, shared_client, patched_redis_streams, created_backends
+    ) -> None:
+        """Code review finding: group= is never caller-overridable via a
+        composite-wide default (it must always equal the channel's own
+        name) — a stray group= passed as a common kwarg must not leak
+        through to the broadcast channel's internal backend."""
+        channels = [
+            Channel(name="broadcast", delivery="broadcast", on_envelope=_noop_handler),
+            Channel(name="audit-ledger", delivery="group", on_envelope=_noop_handler),
+        ]
+        composite = CompositeBackend(
+            client=shared_client, channels=channels, group="should-be-ignored",
+        )
+        await composite.start_consumer(AsyncMock())
+
+        broadcast_backend, ledger_backend = created_backends
+        assert "group" not in broadcast_backend.init_kwargs
+        assert ledger_backend.init_kwargs["group"] == "audit-ledger"
+
+    async def test_start_consumer_logs_when_all_channels_fail(
+        self, composite, created_backends, caplog
+    ) -> None:
+        """Code review finding: a fully-degraded transport (every channel
+        failed to start) should be distinguishable in the logs from a
+        healthy start, without raising (transport failures never crash
+        the bus)."""
+        # Trigger backend creation (without starting consumers yet) so
+        # there is something to attach a side_effect to.
+        await composite.publish(make_envelope())
+        assert len(created_backends) == 3
+        for backend in created_backends:
+            backend.start_consumer.side_effect = RuntimeError("boom")
+
+        with caplog.at_level("ERROR", logger="navigator_eventbus.backends.composite"):
+            await composite.start_consumer(AsyncMock())  # must not raise
+
+        assert any(
+            "0/3 channel consumer" in record.message
+            or "0/3 channel consumer" in record.getMessage()
+            for record in caplog.records
+        )
