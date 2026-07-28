@@ -32,7 +32,7 @@
       "feature_id": "FEAT-430",
       "feature": "eventbus-composite-backend",
       "spec": "sdd/specs/eventbus-composite-backend.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -42,8 +42,8 @@
       "parallelism_notes": "Shares no files with TASK-1850 — both depend only on TASK-1848. Can run in parallel with TASK-1850 in separate worktrees.",
       "assigned_to": null,
       "started_at": "2026-07-28T21:24:07+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-1849-composite-backend-unit-tests.md"
+      "completed_at": "2026-07-28T21:43:45+00:00",
+      "file": "sdd/tasks/completed/TASK-1849-composite-backend-unit-tests.md"
     },
     {
       "id": "TASK-1850",
