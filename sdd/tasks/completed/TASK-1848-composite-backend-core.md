@@ -218,10 +218,41 @@ When you pick up this task:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude Sonnet)
+**Date**: 2026-07-28
+**Notes**: Implemented `Channel` (frozen dataclass, with `__post_init__`
+raising `ValueError` for `delivery="broadcast"` + `max_deliveries`) and
+`CompositeBackend` in `src/navigator_eventbus/backends/composite.py`.
+`CompositeBackend` lazily builds one `RedisStreamsBackend` per channel on
+first use (`_ensure_backends`), sharing a single injected/owned
+`redis.asyncio` client across all of them (`client=` DI seam, never closed
+by the internal backends — verified `redis_streams.py:384`). `publish()`
+delegates to the `publish_via` channel only. `start_consumer(on_envelope)`
+wires the transport-level `on_envelope` to the channel(s) with
+`delivery="broadcast"` (falling back to `publish_via` if none are
+broadcast) and each group channel's own `channel.on_envelope` to the
+others — per-channel failures are caught/logged, not fatal to siblings.
+`close()` stops all internal backends first, then closes the shared
+client only if this instance created it (i.e. no `client=` was injected
+into the `CompositeBackend` itself). Group channels get a per-group dedup
+prefix (`evb:events:dedup:<name>:`) and their own `max_deliveries`/`on_dlq`.
+Added `codec` field to `Channel` (per Implementation Notes §"Key
+Constraints" item 1 — forward-compat override, per spec §8 Open
+Questions) even though it is absent from the spec's illustrative Data
+Models code block. Re-exported `CompositeBackend`/`Channel` from
+`backends/__init__.py` and `CompositeBackend` from the top-level
+`navigator_eventbus/__init__.py` (spec/task only require `CompositeBackend`
+at the top level, not `Channel`). Verified: smoke-test imports,
+`isinstance(composite, TransportBackend)` is `True`, `ruff check` clean on
+all 3 touched files (pre-existing unrelated F401 warnings in
+`navigator_eventbus/__init__.py` predate this change).
 
-**Completed by**: <session or agent ID>
-**Date**: YYYY-MM-DD
-**Notes**: What was implemented, any deviations from scope, issues encountered.
-
-**Deviations from spec**: none | describe if any
+**Deviations from spec**: none — the `start_consumer` broadcast-vs-group
+callback routing follows the task's own "Key Constraints" wording
+literally ("the on_envelope from BusCore goes to the broadcast channel;
+group channels use their own channel.on_envelope"), which is more precise
+than the spec's component diagram (the diagram shows the broadcast
+channel's *logical* end-to-end callback, e.g. `_route_bus_envelope_to_ws`,
+which in practice is expected to be reached via a `BusCore.subscribe()`
+handler fed by the transport-level `on_envelope`, not passed directly to
+the internal `RedisStreamsBackend`).
