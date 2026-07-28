@@ -196,6 +196,8 @@ class RedisStreamsBackend:
         redis_url: Optional[str] = None,
         *,
         client: Optional[Any] = None,
+        password: Optional[str] = None,
+        username: Optional[str] = None,
         group: Optional[str] = None,
         consumer_name: Optional[str] = None,
         stream_prefix: Optional[str] = None,
@@ -235,6 +237,8 @@ class RedisStreamsBackend:
                 "consumption to bound redeliveries against"
             )
         self.redis_url = redis_url
+        self._password = password
+        self._username = username
         self._client = client  # injected — not owned
         self._redis: Optional[Any] = None
         self.stream_prefix = stream_prefix or nav_config.get(
@@ -410,9 +414,12 @@ class RedisStreamsBackend:
         if self._client is not None:
             self._redis = self._client
             return
-        self._redis = await aioredis.from_url(
-            self.redis_url, decode_responses=True
-        )
+        kwargs: dict[str, Any] = {"decode_responses": True}
+        if self._password is not None:
+            kwargs["password"] = self._password
+        if self._username is not None:
+            kwargs["username"] = self._username
+        self._redis = await aioredis.from_url(self.redis_url, **kwargs)
 
     async def _ensure_group(self, stream: str) -> None:
         """Idempotently create the consumer group (MKSTREAM) for *stream*."""
