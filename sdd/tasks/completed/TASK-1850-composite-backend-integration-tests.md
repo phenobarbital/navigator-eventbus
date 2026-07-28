@@ -225,10 +225,53 @@ When you pick up this task:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude Sonnet)
+**Date**: 2026-07-29
+**Notes**: Implemented both spec §4 integration tests in
+`tests/test_composite_integration.py`, marked `pytestmark =
+pytest.mark.integration` (registered marker, matches
+`tests/test_backends_streams.py`'s live-Redis tests), skipping
+gracefully via a `probe.ping()`/`flushdb()` helper when no Redis is
+reachable at `REDIS_TEST_URL` (default `redis://localhost:6379/15`) —
+verified both by running against a live local Redis (both PASS) and by
+pointing `REDIS_TEST_URL` at an unreachable port (both SKIP, 0 failures).
 
-**Completed by**: <session or agent ID>
-**Date**: YYYY-MM-DD
-**Notes**: What was implemented, any deviations from scope, issues encountered.
+`test_composite_broadcast_plus_two_groups`: publishes 10 entries through
+a broadcast + 2 group channels sharing ONE Redis connection; asserts the
+broadcast channel sees all 10, and each group sees all 10 independently
+exactly once. Deliberately does **not** pass `streams=`/`stream_key_fn=`
+to `CompositeBackend` — all 3 channels converge on the same
+default-sharded stream (`<stream_prefix><topic-class>`) via SCAN
+discovery, mirroring `tests/test_backends_streams.py`'s own live tests.
+Discovered mid-implementation (see Deviations) that broadcast mode needs
+a seed entry published on the SAME stream *before* `start_consumer()` —
+otherwise tail-resolution (`_resolve_tail_id`, `redis_streams.py:464`)
+races the first real batch and swallows it entirely as "pre-existing".
+Group channels' fresh consumer-group cursors start at `"0"` and DO see
+that seed, so the group callbacks filter it out by `event_id`.
 
-**Deviations from spec**: none | describe if any
+`test_composite_shutdown_closes_one_connection`: white-box spy on the
+ONE shared `redis.asyncio.Redis` client's `close()` (real client,
+real Redis) proves `CompositeBackend.close()` issues exactly one
+connection-close regardless of channel count — the N internal
+`RedisStreamsBackend` instances never own/close the injected client
+(verified `redis_streams.py:384`). Chosen over literal Redis `MONITOR`-based
+`QUIT` sniffing (mentioned in the spec) as a more deterministic,
+less flaky signal for the same underlying guarantee.
+
+Full suite: `pytest tests/` — 342 passed, 0 regressions.
+`ruff check tests/test_composite_integration.py` — clean.
+
+**Deviations from spec**: the spec's own Test Fixture code block (§4)
+passes `streams=["fieldsync.manager", ...]` to `CompositeBackend` without
+a paired `stream_key_fn=` override — reproducing it literally causes
+`publish()` (which always targets `_stream_for(topic)`,
+i.e. `<stream_prefix><topic-class>` by default) to write to a DIFFERENT
+stream than the one the internal backends are told to *consume* via
+`streams=`, so nothing is ever delivered. That fixture is explicitly a
+scaffold (the Test Specification body is `...`), not runnable code, so
+this task drops the explicit `streams=` override and relies on
+`CompositeBackend`'s default SCAN-based discovery instead — verified
+working end-to-end against a real Redis instance. No production
+`CompositeBackend` code changed to accommodate this; it is purely a test
+construction choice.
