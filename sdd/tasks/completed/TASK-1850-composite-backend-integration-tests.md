@@ -275,3 +275,19 @@ this task drops the explicit `streams=` override and relies on
 working end-to-end against a real Redis instance. No production
 `CompositeBackend` code changed to accommodate this; it is purely a test
 construction choice.
+
+---
+
+### Code Review Follow-up (post-completion)
+
+The feature-level code review flagged (as Major) that the broadcast
+cold-start race this task's `test_composite_broadcast_plus_two_groups`
+discovered and worked around (seed entry before `start_consumer`) was
+never documented on `CompositeBackend` itself — only tribal knowledge in
+this test file. TASK-1848's follow-up commit
+(`fix(eventbus-composite-backend): address code review findings for
+FEAT-430`) adds that documentation directly to `CompositeBackend`'s
+class docstring, referencing this exact seed-entry pattern. No changes
+were made to `tests/test_composite_integration.py` itself — both
+integration tests still pass unchanged against a live Redis instance
+after the fix commit (full suite 347 passed, 0 regressions).

@@ -257,3 +257,29 @@ and hands to `RedisStreamsBackend` (per-group `dedup_prefix`, per-channel
 `on_dlq`) rather than end-to-end Redis dedup behaviour, since actual
 dedup enforcement lives inside `RedisStreamsBackend` (out of scope here,
 already covered by `tests/test_backends_streams.py`).
+
+---
+
+### Code Review Follow-up (post-completion)
+
+Per the feature-level code review (see TASK-1848's Completion Note for
+full findings), `tests/test_composite_backend.py` was updated in the
+same follow-up commit
+(`fix(eventbus-composite-backend): address code review findings for
+FEAT-430`):
+
+- Rewrote `test_broadcast_channel_receives_all_entries`: the broadcast
+  channel's callback is no longer BusCore's transport callback by
+  identity — it is now a chaining wrapper, so the test asserts BOTH the
+  transport callback AND the channel's own (now distinguishable
+  `AsyncMock`) `on_envelope` fire independently for every entry.
+- Added `test_channel_streams_stored_as_immutable_tuple` (Channel-level).
+- Added `test_composite_rejects_multiple_broadcast_channels`.
+- Added `test_group_channel_falls_back_to_common_max_deliveries_and_on_dlq`.
+- Added `test_common_group_kwarg_is_dropped_not_forwarded`.
+- Added `test_start_consumer_logs_when_all_channels_fail` (uses
+  `caplog`, triggers backend creation via `publish()` first so
+  `side_effect` can be attached before `start_consumer()` runs).
+
+19/19 tests pass (`pytest tests/test_composite_backend.py -v`); full
+suite 347 passed, 0 regressions. `ruff check` clean.

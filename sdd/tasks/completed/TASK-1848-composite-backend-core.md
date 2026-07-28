@@ -256,3 +256,50 @@ channel's *logical* end-to-end callback, e.g. `_route_bus_envelope_to_ws`,
 which in practice is expected to be reached via a `BusCore.subscribe()`
 handler fed by the transport-level `on_envelope`, not passed directly to
 the internal `RedisStreamsBackend`).
+
+---
+
+### Code Review Follow-up (post-completion)
+
+A `code-reviewer` pass on the finished feature (all 3 tasks) flagged two
+Major and three Minor findings, all addressed in a follow-up commit
+(`fix(eventbus-composite-backend): address code review findings for
+FEAT-430`):
+
+- **Major — broadcast `on_envelope` silently discarded**: the original
+  `start_consumer` design (described above) completely overrode a
+  broadcast channel's own `channel.on_envelope` with BusCore's
+  transport-level callback whenever `CompositeBackend` was driven via
+  `BusCore`. Reviewer correctly flagged this as a footgun for any
+  direct (non-`BusCore`) caller — the field was documented as
+  "Required" yet silently dead on that path. Fixed by chaining both
+  callbacks (`_chain_feeder_callback`): the transport callback fires
+  first, then `channel.on_envelope` — neither replaces the other.
+  Constructor now also rejects (`ValueError`) more than one
+  `delivery="broadcast"` channel, since there was no well-defined way
+  for >1 broadcast channel to each independently receive the single
+  external callback.
+- **Major — undocumented broadcast cold-start race**: confirmed via
+  `redis_streams.py`'s `_resolve_tail_id`/`_refresh_streams_broadcast`
+  that a brand-new stream's tail-cursor resolution can race its first
+  publish and silently swallow it. This was already worked around in
+  TASK-1850's integration test (seed entry) but never surfaced in
+  `CompositeBackend`'s own docs. Now documented directly in the class
+  docstring with the seed-entry mitigation pattern.
+- **Minor** — `Channel.streams` now defensively copied to an immutable
+  `tuple` in `__post_init__` (previously a mutable `list` aliasing
+  hazard on a "frozen" dataclass); `max_deliveries=`/`on_dlq=` now
+  follow the same "channel overrides, else composite-wide default"
+  precedence `codec=` already had; a stray `group=` passed via
+  `common_backend_kwargs` is now explicitly dropped rather than
+  silently forwarded to every channel including broadcast ones;
+  `start_consumer()` now logs one aggregated warning/error summarizing
+  failed channel names when some (or all) channels fail to start,
+  without raising.
+
+5 new regression tests added in TASK-1849's test file (multi-broadcast
+rejection, streams immutability, max_deliveries/on_dlq fallback, group=
+kwarg drop, all-channels-failed logging) plus a rewrite of
+`test_broadcast_channel_receives_all_entries` for the new chaining
+behavior. Full suite: 347 passed (was 342), 0 regressions. `ruff check`
+clean.
