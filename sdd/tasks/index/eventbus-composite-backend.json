@@ -14,14 +14,14 @@
       "feature_id": "FEAT-430",
       "feature": "eventbus-composite-backend",
       "spec": "sdd/specs/eventbus-composite-backend.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "L",
       "depends_on": [],
       "parallel": false,
       "parallelism_notes": "Foundation task — all other tasks depend on it.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-07-28T21:24:07+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-1848-composite-backend-core.md"
     },
@@ -32,14 +32,16 @@
       "feature_id": "FEAT-430",
       "feature": "eventbus-composite-backend",
       "spec": "sdd/specs/eventbus-composite-backend.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "M",
-      "depends_on": ["TASK-1848"],
+      "depends_on": [
+        "TASK-1848"
+      ],
       "parallel": true,
       "parallelism_notes": "Shares no files with TASK-1850 — both depend only on TASK-1848. Can run in parallel with TASK-1850 in separate worktrees.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-07-28T21:24:07+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-1849-composite-backend-unit-tests.md"
     },
@@ -50,14 +52,16 @@
       "feature_id": "FEAT-430",
       "feature": "eventbus-composite-backend",
       "spec": "sdd/specs/eventbus-composite-backend.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "medium",
       "effort": "M",
-      "depends_on": ["TASK-1848"],
+      "depends_on": [
+        "TASK-1848"
+      ],
       "parallel": true,
       "parallelism_notes": "Shares no files with TASK-1849 — both depend only on TASK-1848. Can run in parallel with TASK-1849 in separate worktrees.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-07-28T21:24:07+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-1850-composite-backend-integration-tests.md"
     }
