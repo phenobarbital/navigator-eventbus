@@ -146,6 +146,7 @@ class CompositeBackend:
         *,
         redis_url: Optional[str] = None,
         client: Optional[Any] = None,
+        password: Optional[str] = None,
         channels: list[Channel],
         codec: Optional[Codec] = None,
         stream_key_fn: Optional[Callable[[str], str]] = None,
@@ -178,6 +179,7 @@ class CompositeBackend:
         self.redis_url = redis_url
         self._client = client  # injected — not owned; None means we own it
         self._redis: Optional[Any] = client
+        self._password = password
         self._channels: list[Channel] = list(channels)
         self._by_name: dict[str, Channel] = {c.name: c for c in channels}
         self._codec = codec
@@ -324,8 +326,11 @@ class CompositeBackend:
     async def _ensure_client(self) -> Any:
         """(Re)build the shared Redis client if it does not exist yet."""
         if self._redis is None:
+            kwargs: dict[str, Any] = {"decode_responses": True}
+            if self._password is not None:
+                kwargs["password"] = self._password
             self._redis = await aioredis.from_url(
-                self.redis_url, decode_responses=True
+                self.redis_url, **kwargs
             )
         return self._redis
 
