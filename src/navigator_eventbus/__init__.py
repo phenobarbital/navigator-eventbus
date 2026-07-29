@@ -31,6 +31,12 @@ from navigator_eventbus.version import (
 )
 
 __all__ = [
+    "__author__",
+    "__author_email__",
+    "__copyright__",
+    "__description__",
+    "__license__",
+    "__title__",
     "__version__",
     "BackpressureError",
     "BusClosedError",

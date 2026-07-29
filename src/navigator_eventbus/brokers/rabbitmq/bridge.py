@@ -23,7 +23,6 @@ from typing import Any, Optional
 
 import aiormq
 
-from .consumer import RMQConsumer
 from .._conf import (
     EMPLOYEE_EVENTS_EXCHANGE,
     MQTT_ACCEPTED_SCHEMA_VERSIONS,
@@ -32,6 +31,7 @@ from .._conf import (
     MQTT_EVENT_DEDUP_TTL,
     MQTT_MAX_BATCH_SIZE,
 )
+from .consumer import RMQConsumer
 
 # Routing key constants
 _TYPE_TO_ROUTING_KEY: dict[str, str] = {
