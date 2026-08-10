@@ -38,6 +38,69 @@ bus = EventBus()
 await bus.emit("bus.example", {"hello": "world"})
 ```
 
+### Receiving webhooks
+
+Mount one catch-all route and register endpoints — including at runtime,
+without touching the aiohttp router. Each delivery is authenticated with the
+endpoint's own HMAC scheme, optionally transformed, and emitted on
+`hooks.webhook.<event_type>`.
+
+```python
+from aiohttp import web
+from navigator_eventbus import EventBus
+from navigator_eventbus.hooks import HookManager, WebhookListenerHook
+
+bus, app = EventBus(), web.Application()
+manager = HookManager(route_to_bus=True)
+manager.set_event_bus(bus)
+
+listener = WebhookListenerHook()
+listener.register_endpoint(
+    "/github",
+    secret=GITHUB_WEBHOOK_SECRET,      # from the environment, never inline
+    signature_scheme="github",         # X-Hub-Signature-256
+    event_type_header="X-GitHub-Event",
+    event_type_prefix="github",
+    dedup_header="X-GitHub-Delivery",  # with dedup_ttl_seconds > 0
+    preprocessor="myapp.hooks:summarize_pr",   # or preprocessor_fn=<callable>
+)
+manager.register(listener)
+listener.setup_routes(app)             # POST /api/v1/hooks/webhook/github
+```
+
+The preprocessor may be sync or async, and receives an optional
+`WebhookContext` second argument. If it raises, the raw payload is emitted
+anyway and the sender still gets a `202` — a transform bug never costs you a
+delivery.
+
+Exclude `listener.base_path` from any auth or body-rewriting middleware: HMAC
+verification needs the exact bytes on the wire.
+
+For a single provider with real classification logic, subclass
+`ProviderWebhookHook` instead — it serves one fixed route and gives you
+`_classify_event` / `_normalize_payload` override points.
+
+### Sending webhooks
+
+```python
+from navigator_eventbus.subscribers import WebhookDeliverySubscriber
+
+delivery = WebhookDeliverySubscriber(
+    url="https://partner.example/hooks/orders",
+    patterns=["order.*"],
+    secret=PARTNER_SECRET,
+    signature_scheme="github",
+)
+delivery.attach(bus)
+...
+await bus.close()
+await delivery.aclose()
+```
+
+Deliveries are queued and retried on 5xx/429 with capped, jittered backoff, so
+a slow endpoint never occupies a bus dispatch worker. Exhausted retries emit
+`bus.webhook_delivery_failed`.
+
 ## Configuration knobs
 
 > ⚠️ **Neutral defaults vs. legacy `parrot:*` deployments.** Every prefix

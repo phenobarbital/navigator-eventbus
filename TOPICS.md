@@ -23,15 +23,30 @@ QuerySource, navigator-auth, ...) sharing one bus never collide.
 | `bus.shutdown_incomplete` | graceful shutdown timed out with in-flight events |
 | `bus.dlq` | an event is routed to the Dead Letter Queue |
 | `bus.dlq_error` | persisting to the DLQ itself fails |
+| `bus.webhook_delivery_failed` | `WebhookDeliverySubscriber` exhausted its retries for one envelope |
+
+`bus.webhook_delivery_failed` sits under `bus.*` on purpose:
+`WebhookDeliverySubscriber` defaults to `exclude_bus_internal=True`, so it
+structurally cannot re-deliver its own failure notice. Putting the topic
+anywhere else would reintroduce the feedback loop.
 
 ## Hooks ingress (owned by `navigator_eventbus.hooks.manager.HookManager`)
 
 | Topic pattern | Emitted when |
 |---|---|
 | `hooks.<hook_type>.<event>` | `HookManager.route_to_bus` forwards a `HookEvent` for a registered `hook_type` (see `HookTypeRegistry`) |
+| `hooks.webhook.<event_type>` | `WebhookListenerHook` or `ProviderWebhookHook` accepted an inbound HTTP delivery |
 
 `<hook_type>` must be registered against `navigator_eventbus.hooks.models.HOOK_TYPES`
 before events under its namespace are accepted (`HookEvent.hook_type` validator).
+
+For `hooks.webhook.*`, the `<event_type>` segment comes from — in precedence
+order — the endpoint's preprocessor return value, the header named by
+`event_type_header`, or the endpoint's configured `event_type` (with
+`event_type_prefix` prepended when set). A `ProviderWebhookHook` subclass that
+overrides `hook_type` emits under `hooks.<that_type>.*` instead, and must
+register that type with `HOOK_TYPES.register(...)` and add a row here first —
+the hook's constructor rejects an unregistered type.
 
 ## Reserved namespaces (future phases / consuming apps)
 

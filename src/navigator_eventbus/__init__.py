@@ -29,6 +29,14 @@ from navigator_eventbus.version import (
     __title__,
     __version__,
 )
+from navigator_eventbus.webhook_signatures import (
+    SignatureCheck,
+    SignatureScheme,
+    SignatureVerdict,
+    available_signature_schemes,
+    get_signature_scheme,
+    register_signature_scheme,
+)
 
 __all__ = [
     "__author__",
@@ -50,5 +58,13 @@ __all__ = [
     "EventSubscription",
     "IngressEnvelope",
     "Severity",
+    # Webhook signature registry — the extension point an integrator reaches
+    # for from the root when teaching the fabric a new provider.
+    "SignatureCheck",
+    "SignatureScheme",
+    "SignatureVerdict",
+    "available_signature_schemes",
+    "get_signature_scheme",
+    "register_signature_scheme",
     "lifecycle",
 ]

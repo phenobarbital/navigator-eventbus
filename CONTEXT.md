@@ -31,16 +31,34 @@ src/navigator_eventbus/
 ├── dlq.py               # DLQHandler
 ├── converters.py        # Serialization converters
 ├── serialization.py     # Event serialization
-├── _imports.py          # Lazy import helpers
+├── _imports.py          # Lazy import helpers + resolve_callable()
 ├── ingress_models.py    # IngressEnvelope
+├── webhook_signatures.py # Pluggable HMAC schemes (verify inbound / sign outbound)
 ├── backends/            # Transport backends (memory, redis)
 ├── hooks/               # Generic hooks fabric
 │   ├── models.py        # HookEvent, HookTypeRegistry
-│   └── brokers/         # Hook broker implementations
+│   ├── brokers/         # Hook broker implementations
+│   └── webhook/         # Inbound webhooks (listener + provider base)
 ├── ingress/             # WebSocket/gRPC ingress
 │   └── proto/           # gRPC protocol definitions
-└── subscribers/         # Subscriber implementations
+└── subscribers/         # Subscriber implementations (incl. outbound webhook)
 ```
+
+## Ingress vs. hooks — which one is a new inbound adapter?
+
+Both `ingress/` and `hooks/` accept traffic from outside, and both are
+`BaseHook` subclasses, so "is a BaseHook" does not discriminate. **Topic
+ownership does:**
+
+| | `ingress/` | `hooks/` |
+|---|---|---|
+| Input shape | already bus-shaped (`IngressEnvelope`, `extra="forbid"`) | foreign/vendor-shaped, unknown schema |
+| Topic | the **caller** supplies it | the **package** derives it (`hooks.<type>.<event>`) |
+| Destination | `bus.emit(...)` directly | `self.on_event(HookEvent)` → `HookManager` |
+| Auth | one shared bearer token for the adapter | per-endpoint HMAC over the raw body |
+
+A webhook receiver is in the right-hand column on every row, which is why
+`hooks/webhook/` — not `ingress/http.py` — is where it lives.
 
 ## Key Abstractions
 
@@ -55,6 +73,10 @@ src/navigator_eventbus/
 | `Severity` | `envelope.py` | Event severity levels |
 | `HookTypeRegistry` | `hooks/models.py` | Registry for hook type namespaces |
 | `IngressEnvelope` | `ingress_models.py` | Envelope for ingress adapters |
+| `SignatureScheme` | `webhook_signatures.py` | Pluggable HMAC scheme (github/jira/generic/stripe); signs and verifies |
+| `WebhookListenerHook` | `hooks/webhook/listener.py` | Catch-all route fronting N runtime-registered webhook endpoints |
+| `ProviderWebhookHook` | `hooks/webhook/provider.py` | Base class for a fixed, single-route provider webhook |
+| `WebhookDeliverySubscriber` | `subscribers/webhook.py` | Outbound: POSTs matching bus envelopes to an HTTP endpoint |
 
 ## Dependencies
 
@@ -75,4 +97,6 @@ See `TOPICS.md` for the full topic registry. Key meta-topics:
 - `bus.backpressure` — queue size limit hit
 - `bus.shutdown_incomplete` — graceful shutdown timed out
 - `bus.dlq` — event routed to DLQ
+- `bus.webhook_delivery_failed` — outbound webhook exhausted its retries
 - `hooks.<hook_type>.<event>` — hook events via `HookManager`
+- `hooks.webhook.<event_type>` — inbound HTTP webhook accepted

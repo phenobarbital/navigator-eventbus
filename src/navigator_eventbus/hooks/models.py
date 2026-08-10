@@ -140,6 +140,10 @@ class HookType:
     BROKER_MQTT = "broker_mqtt"
     BROKER_SQS = "broker_sqs"
     FILESYSTEM = "filesystem"
+    #: Generic inbound HTTP webhook (see ``navigator_eventbus.hooks.webhook``).
+    #: Registered in HOOK_TYPES since FEAT-312; the constant was added when
+    #: the webhook fabric claimed the slot.
+    WEBHOOK = "webhook"
     # Ai-parrot-specific — pre-registered in HOOK_TYPES (see docstring).
     JIRA_WEBHOOK = "jira_webhook"
     GITHUB_WEBHOOK = "github_webhook"
