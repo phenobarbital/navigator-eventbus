@@ -41,24 +41,36 @@ src/navigator_eventbus/
 │   └── webhook/         # Inbound webhooks (listener + provider base)
 ├── ingress/             # WebSocket/gRPC ingress
 │   └── proto/           # gRPC protocol definitions
+├── queues/              # SQS-style pull queues (store + HTTP API + receipts)
 └── subscribers/         # Subscriber implementations (incl. outbound webhook)
 ```
 
-## Ingress vs. hooks — which one is a new inbound adapter?
+## Ingress vs. hooks vs. queues — where does a new adapter go?
 
-Both `ingress/` and `hooks/` accept traffic from outside, and both are
-`BaseHook` subclasses, so "is a BaseHook" does not discriminate. **Topic
-ownership does:**
+All three accept traffic from outside and all three are `BaseHook`
+subclasses, so "is a BaseHook" does not discriminate. **Topic ownership and
+delivery direction do:**
 
-| | `ingress/` | `hooks/` |
-|---|---|---|
-| Input shape | already bus-shaped (`IngressEnvelope`, `extra="forbid"`) | foreign/vendor-shaped, unknown schema |
-| Topic | the **caller** supplies it | the **package** derives it (`hooks.<type>.<event>`) |
-| Destination | `bus.emit(...)` directly | `self.on_event(HookEvent)` → `HookManager` |
-| Auth | one shared bearer token for the adapter | per-endpoint HMAC over the raw body |
+| | `ingress/` | `hooks/` | `queues/` |
+|---|---|---|---|
+| Input shape | already bus-shaped (`IngressEnvelope`, `extra="forbid"`) | foreign/vendor-shaped, unknown schema | bus-shaped (`IngressEnvelope`) |
+| Topic | the **caller** supplies it | the **package** derives it (`hooks.<type>.<event>`) | caller supplies, governed by `topic_prefix` |
+| Delivery | push, fan-out to every matching subscriber | push, via `HookManager` | **pull**, competing consumers per group |
+| Destination | `bus.emit(...)` directly | `self.on_event(HookEvent)` → `HookManager` | a Redis stream; `BusCore` is bypassed |
+| Ack | none — dispatch is fire-and-forget | none | explicit, with lease + redelivery |
+| Auth | one shared bearer token for the adapter | per-endpoint HMAC over the raw body | per-queue tokens split by role |
 
-A webhook receiver is in the right-hand column on every row, which is why
+A webhook receiver is in the `hooks/` column on every row, which is why
 `hooks/webhook/` — not `ingress/http.py` — is where it lives.
+
+The `queues/` column exists because a lease-based pull API cannot be
+expressed by the `TransportBackend` protocol (three methods, and
+`OnEnvelope` returns `Awaitable[None]` — no ack handle), and because
+`BusCore` deliberately never re-raises from a handler (isolation model B),
+so a message consumed through `bus.subscribe()` is acknowledged even when
+processing fails. That is the opposite of queue semantics, so the queue
+plane owns its lease lifecycle end to end and treats the bus as an optional,
+opt-in bridge in either direction.
 
 ## Key Abstractions
 
@@ -77,6 +89,10 @@ A webhook receiver is in the right-hand column on every row, which is why
 | `WebhookListenerHook` | `hooks/webhook/listener.py` | Catch-all route fronting N runtime-registered webhook endpoints |
 | `ProviderWebhookHook` | `hooks/webhook/provider.py` | Base class for a fixed, single-route provider webhook |
 | `WebhookDeliverySubscriber` | `subscribers/webhook.py` | Outbound: POSTs matching bus envelopes to an HTTP endpoint |
+| `QueueStore` | `queues/store.py` | Redis Streams lease engine: receive/delete/visibility, DLQ, purge |
+| `QueueAPI` | `queues/api.py` | SQS-style HTTP surface — producers POST, consumers pull |
+| `ReceiptCodec` | `queues/receipts.py` | Stateless HMAC-signed receipt handles (replica-safe) |
+| `QueueFeeder` | `queues/feeder.py` | Bridge: bus events become pullable over HTTP |
 
 ## Dependencies
 
@@ -98,5 +114,7 @@ See `TOPICS.md` for the full topic registry. Key meta-topics:
 - `bus.shutdown_incomplete` — graceful shutdown timed out
 - `bus.dlq` — event routed to DLQ
 - `bus.webhook_delivery_failed` — outbound webhook exhausted its retries
+- `bus.queue_dlq` — queued message exceeded `max_receives`
 - `hooks.<hook_type>.<event>` — hook events via `HookManager`
 - `hooks.webhook.<event_type>` — inbound HTTP webhook accepted
+- `queue.<name>.<topic>` — message mirrored from an HTTP pull queue

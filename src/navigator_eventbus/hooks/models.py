@@ -91,6 +91,7 @@ _GENERIC_HOOK_TYPES = (
     "broker_sqs",
     "filesystem",
     "webhook",
+    "queue",
 )
 
 #: The eight ai-parrot-specific integration hook types from the pre-FEAT-312
@@ -144,6 +145,8 @@ class HookType:
     #: Registered in HOOK_TYPES since FEAT-312; the constant was added when
     #: the webhook fabric claimed the slot.
     WEBHOOK = "webhook"
+    #: SQS-style pull queues (see ``navigator_eventbus.queues``).
+    QUEUE = "queue"
     # Ai-parrot-specific — pre-registered in HOOK_TYPES (see docstring).
     JIRA_WEBHOOK = "jira_webhook"
     GITHUB_WEBHOOK = "github_webhook"

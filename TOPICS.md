@@ -24,6 +24,8 @@ QuerySource, navigator-auth, ...) sharing one bus never collide.
 | `bus.dlq` | an event is routed to the Dead Letter Queue |
 | `bus.dlq_error` | persisting to the DLQ itself fails |
 | `bus.webhook_delivery_failed` | `WebhookDeliverySubscriber` exhausted its retries for one envelope |
+| `bus.queue_dlq` | a queued message exceeded its queue's `max_receives` and was parked to the DLQ |
+| `bus.queue_purged` | an operator purged a queue through the admin route |
 
 `bus.webhook_delivery_failed` sits under `bus.*` on purpose:
 `WebhookDeliverySubscriber` defaults to `exclude_bus_internal=True`, so it
@@ -57,6 +59,16 @@ the hook's constructor rejects an unregistered type.
 | `task.*` / `flow.*` | Flowtask | reserved |
 | `auth.*` | navigator-auth | reserved |
 | `fieldsync.*` | FieldSync (`../fieldsync`, FEAT-409) | reserved — consumes `RedisStreamsBackend` via its own `codec=`/`stream_key_fn=`/`streams=` seams (FEAT-320) rather than a parallel transport |
+| `queue.*` | `navigator_eventbus.queues` (FEAT-432) | active — default prefix for topics mirrored from an HTTP pull queue onto the bus |
+
+### Governance note on `queue.*`
+
+A queue producer supplies its own `IngressEnvelope.topic`, so with
+`mirror_to_bus=True` it could otherwise emit under **any** namespace.
+`QueueConfig.topic_prefix` (default `queue.<name>`) forces mirrored topics
+under a governed prefix. Setting `topic_prefix=None` explicitly opts into
+"the producer owns the topic", and is only legitimate when that producer
+already owns a namespace registered in this file.
 
 ## Registering a new namespace
 

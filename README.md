@@ -101,6 +101,64 @@ Deliveries are queued and retried on 5xx/429 with capped, jittered backoff, so
 a slow endpoint never occupies a bus dispatch worker. Exhausted retries emit
 `bus.webhook_delivery_failed`.
 
+### Pull queues (SQS-style)
+
+Needs the `[redis]` extra. A producer POSTs an envelope; consumers **pull**
+over HTTP with receipt handles, so they can be written in any language and
+never need Redis access.
+
+```python
+from navigator_eventbus.queues import (
+    QueueAPI, QueueConfig, QueueGroupConfig, QueueRegistry, QueueStore, ReceiptCodec,
+)
+
+registry = QueueRegistry(queues=[
+    QueueConfig(
+        name="orders",
+        # Each group sees EVERY message; within a group, one consumer per message.
+        groups=[QueueGroupConfig(name="billing"), QueueGroupConfig(name="analytics")],
+        default_visibility_timeout_ms=30_000,
+        max_receives=5,                       # then parked to the DLQ
+        producer_tokens=(PRODUCER_TOKEN,),
+        consumer_tokens=(CONSUMER_TOKEN,),
+    ),
+])
+store = QueueStore(registry, redis_client, ReceiptCodec(RECEIPT_KEYS))
+api = QueueAPI(registry, store)
+api.setup_routes(app)                          # /api/v1/queues/...
+await api.start()
+```
+
+```bash
+# produce — the body IS an IngressEnvelope (unknown fields are rejected)
+curl -X POST /api/v1/queues/orders/messages -H "X-API-Key: $PRODUCER_TOKEN" \
+     -d '{"topic": "order.created", "payload": {"id": 7}}'
+
+# consume — long-poll up to 20s, then delete with the receipt handle
+curl -X POST /api/v1/queues/orders/messages/receive -H "X-API-Key: $CONSUMER_TOKEN" \
+     -d '{"group": "billing", "max_messages": 10, "wait_time_seconds": 20}'
+
+curl -X POST /api/v1/queues/orders/messages/delete -H "X-API-Key: $CONSUMER_TOKEN" \
+     -d '{"group": "billing", "entries": [{"id": "1", "receipt_handle": "q1...."}]}'
+
+# nack — visibility 0 releases it for immediate redelivery
+curl -X POST /api/v1/queues/orders/messages/visibility -H "X-API-Key: $CONSUMER_TOKEN" \
+     -d '{"group": "billing", "entries": [{"id": "1", "receipt_handle": "q1....",
+          "visibility_timeout_seconds": 0}]}'
+```
+
+`BUS_QUEUE_RECEIPT_KEYS` (comma-separated; the first signs, all verify) is
+**required** — the API refuses to start without it. A per-process random key
+would break every multi-replica deployment and every restart.
+
+Delivery is **at-least-once**: a consumer that dies after `receive` but before
+`delete` gets the message again once its lease expires. Consumers must be
+idempotent.
+
+Queues are a plane parallel to the bus, not a layer on it — see the
+"Ingress vs. hooks vs. queues" table in `CONTEXT.md` for why. Two opt-in
+bridges connect them: `QueueConfig.mirror_to_bus` and `QueueFeeder`.
+
 ## Configuration knobs
 
 > ⚠️ **Neutral defaults vs. legacy `parrot:*` deployments.** Every prefix
