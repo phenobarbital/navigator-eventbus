@@ -85,9 +85,16 @@ class Codec(Protocol):
         ...
 
 
-class _DefaultCodec:
+class DefaultCodec:
     """Preserves today's exact wire shape — the implicit codec used when
-    ``codec=`` is not supplied."""
+    ``codec=`` is not supplied.
+
+    Public since FEAT-432: the pull-queue plane
+    (:mod:`navigator_eventbus.queues`) **imports** this rather than
+    re-implementing the shape. If the two planes' wire formats ever drifted,
+    an envelope written by ``bus.publish()`` would become undecodable by the
+    queue API and vice versa.
+    """
 
     def encode(self, envelope: EventEnvelope) -> dict[str, Any]:
         return {"envelope": json.dumps(envelope.to_dict())}
@@ -96,6 +103,10 @@ class _DefaultCodec:
         raw = fields.get("envelope") or fields.get(b"envelope")  # type: ignore[call-overload]
         data = raw.decode() if isinstance(raw, bytes) else raw
         return EventEnvelope.from_dict(json.loads(data))
+
+
+#: Backwards-compatible alias for the pre-FEAT-432 private name.
+_DefaultCodec = DefaultCodec
 
 
 class RedisStreamsBackend:

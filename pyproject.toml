@@ -55,6 +55,11 @@ mqtt = [
 brokers = [
     "navigator-eventbus[redis]",
 ]
+# SQS-style pull queues. An alias for [redis] — the queue plane is built on
+# Redis Streams consumer groups and adds no third-party dependency of its own.
+queues = [
+    "navigator-eventbus[redis]",
+]
 rabbitmq = [
     "aiormq>=6.7",
 ]
@@ -70,7 +75,7 @@ serializer = [
     "jsonpickle>=3",
 ]
 all = [
-    "navigator-eventbus[redis,grpc,notify,scheduler,watchdog,mqtt,brokers,rabbitmq,sqs]",
+    "navigator-eventbus[redis,grpc,notify,scheduler,watchdog,mqtt,brokers,queues,rabbitmq,sqs]",
 ]
 dev = [
     "pytest>=8.0",
