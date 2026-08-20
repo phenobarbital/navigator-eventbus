@@ -17,7 +17,12 @@ from navigator_eventbus import lifecycle
 from navigator_eventbus.backends.composite import CompositeBackend
 from navigator_eventbus.core import BackpressureError, BusClosedError, BusCore
 from navigator_eventbus.dlq import DLQHandler
-from navigator_eventbus.envelope import EventEnvelope, Severity
+from navigator_eventbus.envelope import (
+    ENVELOPE_SCHEMA_VERSION,
+    EventEnvelope,
+    Severity,
+    UnsupportedSchemaVersion,
+)
 from navigator_eventbus.evb import Event, EventBus, EventPriority, EventSubscription
 from navigator_eventbus.ingress_models import IngressEnvelope
 from navigator_eventbus.version import (
@@ -51,6 +56,7 @@ __all__ = [
     "BusCore",
     "CompositeBackend",
     "DLQHandler",
+    "ENVELOPE_SCHEMA_VERSION",
     "Event",
     "EventBus",
     "EventEnvelope",
@@ -58,6 +64,7 @@ __all__ = [
     "EventSubscription",
     "IngressEnvelope",
     "Severity",
+    "UnsupportedSchemaVersion",
     # Webhook signature registry — the extension point an integrator reaches
     # for from the root when teaching the fabric a new provider.
     "SignatureCheck",

@@ -37,6 +37,10 @@ class IngressEnvelope(BaseModel):
         correlation_id: Optional chain-tracking identifier.
         trace_context: Optional trace-context dict.
         metadata: Free-form JSON-safe metadata.
+        schema_version: Wire schema version (default ``1``). Shape
+            validation only — any int is accepted; semantic rejection of
+            unknown versions happens in :meth:`EventEnvelope.from_dict`,
+            not here.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -53,6 +57,7 @@ class IngressEnvelope(BaseModel):
     correlation_id: Optional[str] = None
     trace_context: Optional[dict[str, Any]] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    schema_version: int = 1
 
     @field_validator("timestamp")
     @classmethod
@@ -86,4 +91,5 @@ class IngressEnvelope(BaseModel):
             correlation_id=self.correlation_id,
             trace_context=self.trace_context,
             metadata=self.metadata,
+            schema_version=self.schema_version,
         )

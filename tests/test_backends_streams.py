@@ -395,6 +395,36 @@ async def test_streams_event_id_dedup(fake_redis):
     await backend.close()
 
 
+async def test_streams_roundtrip_with_version(fake_redis):
+    """FEAT-319 M1: legacy (version-less) and v1 messages coexist in one
+    stream and both are consumable via ``from_dict``."""
+    backend = make_backend(fake_redis)
+    received: list[EventEnvelope] = []
+
+    async def consumer(envelope):
+        received.append(envelope)
+
+    # Legacy entry: wire dict with no "schema_version" key at all —
+    # simulates a message produced before this spec landed.
+    legacy_env = make_envelope("app.legacy")
+    legacy_wire = legacy_env.to_dict()
+    del legacy_wire["schema_version"]
+    await fake_redis.xadd(
+        "evb:stream:app", {"envelope": json.dumps(legacy_wire)}
+    )
+
+    # v1 entry via the normal publish path.
+    v1_env = make_envelope("app.v1")
+    await backend.publish(v1_env)
+
+    await backend.start_consumer(consumer)
+    await wait_until(lambda: len(received) == 2)
+    by_topic = {env.topic: env for env in received}
+    assert by_topic["app.legacy"].schema_version == 1
+    assert by_topic["app.v1"].schema_version == 1
+    await backend.close()
+
+
 async def test_streams_failure_keeps_pending_and_unmarked(fake_redis):
     backend = make_backend(fake_redis, autoclaim_interval=999)  # sweeper idle
     calls: list[str] = []
@@ -472,6 +502,38 @@ async def test_streams_poison_entry_acked_and_dropped(fake_redis):
     await backend.start_consumer(consumer)
     await wait_until(lambda: len(fake_redis.acked) == 1)  # poison ACKed away
     assert received == []
+    await backend.close()
+
+
+async def test_streams_unsupported_schema_version_acked_dropped_and_logged(
+    fake_redis, caplog
+):
+    """FEAT-319 M1 fix: a well-formed but forward-incompatible entry (from
+    a rolling upgrade with a newer producer) is dropped+ACKed like a
+    poison entry, but logged distinctly rather than as generic
+    'Undecodable'."""
+    future_env = make_envelope("app.future")
+    future_wire = future_env.to_dict()
+    future_wire["schema_version"] = 99
+    await fake_redis.xadd(
+        "evb:stream:app", {"envelope": json.dumps(future_wire)}
+    )
+    backend = make_backend(fake_redis)
+    received: list[EventEnvelope] = []
+
+    async def consumer(envelope):
+        received.append(envelope)
+
+    with caplog.at_level("ERROR"):
+        await backend.start_consumer(consumer)
+        await wait_until(lambda: len(fake_redis.acked) == 1)
+    assert received == []
+    assert any(
+        "Unsupported schema_version" in r.message for r in caplog.records
+    )
+    assert not any(
+        "Undecodable" in r.message for r in caplog.records
+    )
     await backend.close()
 
 
