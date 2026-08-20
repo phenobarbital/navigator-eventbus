@@ -62,6 +62,8 @@ class RedisPubSubBackend:
         redis_url: Optional[str] = None,
         *,
         client: Optional[Any] = None,
+        password: Optional[str] = None,
+        username: Optional[str] = None,
         channel_prefix: Optional[str] = None,
         reconnect_base_delay: float = 0.5,
         reconnect_max_delay: float = 30.0,
@@ -71,6 +73,8 @@ class RedisPubSubBackend:
                 "RedisPubSubBackend requires a redis_url or an injected client"
             )
         self.redis_url = redis_url
+        self._password = password
+        self._username = username
         self._client = client  # injected — not owned
         self.channel_prefix = channel_prefix or DEFAULT_CHANNEL_PREFIX
         self._redis: Optional[Any] = None
@@ -147,9 +151,12 @@ class RedisPubSubBackend:
         if self._client is not None:
             self._redis = self._client
             return
-        self._redis = await aioredis.from_url(
-            self.redis_url, decode_responses=True
-        )
+        kwargs: dict[str, Any] = {"decode_responses": True}
+        if self._password is not None:
+            kwargs["password"] = self._password
+        if self._username is not None:
+            kwargs["username"] = self._username
+        self._redis = await aioredis.from_url(self.redis_url, **kwargs)
 
     async def _run_consumer(self) -> None:
         """Consume ``pmessage``s forever, reconnecting with backoff."""

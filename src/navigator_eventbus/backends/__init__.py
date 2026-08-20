@@ -5,11 +5,14 @@ Mudado desde
 (ai-parrot@686aba1fe, FEAT-310).
 """
 from navigator_eventbus.backends.base import OnEnvelope, TransportBackend
+from navigator_eventbus.backends.composite import Channel, CompositeBackend
 from navigator_eventbus.backends.memory import MemoryBackend
 from navigator_eventbus.backends.redis_pubsub import RedisPubSubBackend
 from navigator_eventbus.backends.redis_streams import RedisStreamsBackend
 
 __all__ = (
+    "Channel",
+    "CompositeBackend",
     "MemoryBackend",
     "OnEnvelope",
     "RedisPubSubBackend",

@@ -11,11 +11,19 @@ from navigator_eventbus.subscribers.notification import (
     AlertsConfig,
     NotificationSubscriber,
 )
+from navigator_eventbus.subscribers.webhook import (
+    DELIVERY_FAILED_TOPIC,
+    WebhookDeliveryConfig,
+    WebhookDeliverySubscriber,
+)
 
 __all__ = (
+    "DELIVERY_FAILED_TOPIC",
     "AlertRule",
     "AlertsConfig",
     "AuditSubscriber",
     "MetricsSubscriber",
     "NotificationSubscriber",
+    "WebhookDeliveryConfig",
+    "WebhookDeliverySubscriber",
 )
