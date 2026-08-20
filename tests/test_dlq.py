@@ -10,10 +10,17 @@ when ``DBUSER`` is unset.
 """
 import asyncio
 import time
+from datetime import datetime, timezone
 
 import pytest
 
-from navigator_eventbus import BusCore, DLQHandler, EventEnvelope, Severity
+from navigator_eventbus import (
+    BusCore,
+    DLQHandler,
+    EventEnvelope,
+    Severity,
+    UnsupportedSchemaVersion,
+)
 from navigator_eventbus import dlq as dlq_module
 
 
@@ -134,8 +141,9 @@ async def test_retry_exhaustion_persists_to_dlq(mock_asyncdb):
     assert "navigator.evb_dlq" in sql
     assert args[0] == env.event_id
     assert args[1] == "app.task"
-    assert "ValueError: kaput" in args[9]
-    assert args[10] == 1  # attempts
+    assert args[9] == 1  # schema_version (FEAT-319 M1 fix — actually written)
+    assert "ValueError: kaput" in args[10]
+    assert args[11] == 1  # attempts
     assert mock_asyncdb.constructed[0] == ("pg", "postgres://fake/db")
     await core.close()
 
@@ -152,6 +160,19 @@ async def test_ddl_targets_navigator_evb_dlq(mock_asyncdb):
     assert len(
         [sql for sql, _ in mock_asyncdb.executed if "CREATE TABLE" in sql]
     ) == 1
+
+
+async def test_ddl_retrofits_schema_version_column(mock_asyncdb):
+    """FEAT-319 M1 fix: existing (pre-M1) tables get the column via
+    ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS`` — ``CREATE TABLE IF NOT
+    EXISTS`` alone would never touch an already-existing table."""
+    core = BusCore(workers=1)
+    handler = DLQHandler(core, dsn="postgres://fake/db")
+    await handler.ensure_table()
+    ddl = [sql for sql, _ in mock_asyncdb.executed if "CREATE TABLE" in sql][0]
+    assert "schema_version" in ddl
+    assert "ALTER TABLE" in ddl
+    assert "ADD COLUMN IF NOT EXISTS schema_version" in ddl
 
 
 async def test_dlq_duplicate_event_id_noop(mock_asyncdb):
@@ -230,6 +251,117 @@ async def test_dlq_replay_republishes(mock_asyncdb):
     ]
     assert len(marked) == 1
     assert marked[0][1] == (stored.event_id,)
+    await core.close()
+
+
+async def test_dlq_replay_preserves_stored_schema_version(mock_asyncdb):
+    """FEAT-319 M1 fix: a post-M1 row with an explicit ``schema_version``
+    column value round-trips through replay unchanged (not defaulted)."""
+    core = BusCore(workers=1, queue_size=16)
+    await core.start()
+    handler = DLQHandler(core, dsn="postgres://fake/db")
+
+    stored = make_envelope("orders.sync")
+    mock_asyncdb.query_result = [
+        {
+            "event_id": stored.event_id,
+            "topic": stored.topic,
+            "payload": '{"k": 1}',
+            "severity": Severity.ERROR.value,
+            "priority": 5,
+            "source": "worker-1",
+            "correlation_id": None,
+            "trace_context": None,
+            "metadata": "{}",
+            "schema_version": 1,
+            "failure_reason": "ValueError: kaput",
+            "attempts": 3,
+            "failed_at": "2026-07-16T10:00:00+00:00",
+        }
+    ]
+    received: list[EventEnvelope] = []
+    core.subscribe("orders.*", lambda e: received.append(e))
+
+    count = await handler.replay(event_id=stored.event_id)
+    assert count == 1
+    await wait_until(lambda: len(received) == 1)
+    assert received[0].schema_version == 1
+    await core.close()
+
+
+async def test_row_to_envelope_raises_for_future_schema_version(mock_asyncdb):
+    """Lenient backwards, STRICT forwards — never silently downgrade."""
+    row = {
+        "event_id": "e-future",
+        "topic": "orders.sync",
+        "payload": "{}",
+        "severity": Severity.INFO.value,
+        "priority": 5,
+        "source": None,
+        "correlation_id": None,
+        "trace_context": None,
+        "metadata": "{}",
+        "schema_version": 99,
+        "failed_at": "2026-07-16T10:00:00+00:00",
+    }
+    with pytest.raises(UnsupportedSchemaVersion, match="orders.sync"):
+        DLQHandler._row_to_envelope(row)
+
+
+async def test_dlq_replay_skips_unsupported_schema_version_row(mock_asyncdb):
+    """A future-version row is SKIPPED (logged, left un-replayed) instead
+    of aborting the whole batch or being silently downgraded."""
+    core = BusCore(workers=1, queue_size=16)
+    await core.start()
+    handler = DLQHandler(core, dsn="postgres://fake/db")
+
+    bad = make_envelope("orders.future")
+    good = make_envelope("orders.sync")
+    mock_asyncdb.query_result = [
+        {
+            "event_id": bad.event_id,
+            "topic": bad.topic,
+            "payload": "{}",
+            "severity": Severity.INFO.value,
+            "priority": 5,
+            "source": None,
+            "correlation_id": None,
+            "trace_context": None,
+            "metadata": "{}",
+            "schema_version": 99,
+            "failed_at": "2026-07-16T10:00:00+00:00",
+        },
+        {
+            "event_id": good.event_id,
+            "topic": good.topic,
+            "payload": "{}",
+            "severity": Severity.INFO.value,
+            "priority": 5,
+            "source": None,
+            "correlation_id": None,
+            "trace_context": None,
+            "metadata": "{}",
+            "schema_version": 1,
+            "failed_at": "2026-07-16T10:00:00+00:00",
+        },
+    ]
+    received: list[EventEnvelope] = []
+    core.subscribe("orders.*", lambda e: received.append(e))
+
+    count = await handler.replay(
+        since=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    assert count == 1  # only the good row counted
+    await wait_until(lambda: len(received) == 1)
+    assert received[0].topic == "orders.sync"
+
+    marked = [
+        args
+        for sql, args in mock_asyncdb.executed
+        if "replayed_at = now()" in sql
+    ]
+    # only the good row's event_id was marked replayed
+    assert marked == [(good.event_id,)]
     await core.close()
 
 

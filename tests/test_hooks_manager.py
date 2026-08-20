@@ -98,8 +98,10 @@ async def test_route_to_bus_severity_from_metadata():
 
 
 async def test_route_to_bus_default_off_legacy_dual_emit():
-    """Default OFF → byte-identical legacy dual-emit wire shape."""
-    mgr = HookManager()
+    """Explicit OFF (FEAT-319: bare default is now tri-state/auto — this
+    test targets the explicit-False path) → byte-identical legacy
+    dual-emit wire shape."""
+    mgr = HookManager(route_to_bus=False)
     assert mgr.route_to_bus is False
     cb = AsyncMock()
     bus = MagicMock()
@@ -211,7 +213,7 @@ class TestSetEventBus:
 
 class TestDualEmit:
     async def test_dual_emit_calls_callback_and_bus(self):
-        mgr = HookManager()
+        mgr = HookManager(route_to_bus=False)  # FEAT-319: legacy shape pinned explicitly
         cb = AsyncMock()
         bus = MagicMock()
         bus.emit = AsyncMock(return_value=1)
@@ -229,7 +231,7 @@ class TestDualEmit:
         )
 
     async def test_dual_emit_channel_uses_hook_type_and_event_type(self):
-        mgr = HookManager()
+        mgr = HookManager(route_to_bus=False)  # FEAT-319: legacy shape pinned explicitly
         mgr._callback = AsyncMock()
         bus = MagicMock()
         bus.emit = AsyncMock(return_value=1)
