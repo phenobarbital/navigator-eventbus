@@ -42,6 +42,7 @@ before events under its namespace are accepted (`HookEvent.hook_type` validator)
 | `task.*` / `flow.*` | Flowtask | reserved |
 | `auth.*` | navigator-auth | reserved |
 | `fieldsync.*` | FieldSync (`../fieldsync`, FEAT-409) | reserved — consumes `RedisStreamsBackend` via its own `codec=`/`stream_key_fn=`/`streams=` seams (FEAT-320) rather than a parallel transport |
+| `saas.*` | ai-parrot SaaS control plane (`packages/ai-parrot-saas`) | reserved — run/tenant/usage/webhook lifecycle for the multi-tenant Flows service; consumes `RedisStreamsBackend` + `RedisPubSubBackend` via `CompositeBackend` |
 
 ## Registering a new namespace
 
