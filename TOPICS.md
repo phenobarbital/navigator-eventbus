@@ -59,6 +59,7 @@ the hook's constructor rejects an unregistered type.
 | `task.*` / `flow.*` | Flowtask | reserved |
 | `auth.*` | navigator-auth | reserved |
 | `fieldsync.*` | FieldSync (`../fieldsync`, FEAT-409) | reserved — consumes `RedisStreamsBackend` via its own `codec=`/`stream_key_fn=`/`streams=` seams (FEAT-320) rather than a parallel transport |
+| `saas.*` | ai-parrot SaaS control plane (`packages/ai-parrot-saas`) | reserved — run/tenant/usage/webhook lifecycle for the multi-tenant Flows service; consumes `RedisStreamsBackend` + `RedisPubSubBackend` via `CompositeBackend` |
 | `queue.*` | `navigator_eventbus.queues` (FEAT-432) | active — default prefix for topics mirrored from an HTTP pull queue onto the bus |
 
 ### Governance note on `queue.*`
