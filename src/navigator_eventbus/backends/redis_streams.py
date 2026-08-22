@@ -52,7 +52,7 @@ from navconfig import config as nav_config
 from navconfig.logging import logging
 
 from navigator_eventbus.backends.base import OnEnvelope
-from navigator_eventbus.envelope import EventEnvelope
+from navigator_eventbus.envelope import EventEnvelope, UnsupportedSchemaVersion
 
 #: Neutral defaults (FEAT-312) — override via constructor kwarg or navconfig.
 DEFAULT_STREAM_PREFIX = "evb:stream:"
@@ -85,9 +85,16 @@ class Codec(Protocol):
         ...
 
 
-class _DefaultCodec:
+class DefaultCodec:
     """Preserves today's exact wire shape — the implicit codec used when
-    ``codec=`` is not supplied."""
+    ``codec=`` is not supplied.
+
+    Public since FEAT-432: the pull-queue plane
+    (:mod:`navigator_eventbus.queues`) **imports** this rather than
+    re-implementing the shape. If the two planes' wire formats ever drifted,
+    an envelope written by ``bus.publish()`` would become undecodable by the
+    queue API and vice versa.
+    """
 
     def encode(self, envelope: EventEnvelope) -> dict[str, Any]:
         return {"envelope": json.dumps(envelope.to_dict())}
@@ -96,6 +103,10 @@ class _DefaultCodec:
         raw = fields.get("envelope") or fields.get(b"envelope")  # type: ignore[call-overload]
         data = raw.decode() if isinstance(raw, bytes) else raw
         return EventEnvelope.from_dict(json.loads(data))
+
+
+#: Backwards-compatible alias for the pre-FEAT-432 private name.
+_DefaultCodec = DefaultCodec
 
 
 class RedisStreamsBackend:
@@ -824,6 +835,21 @@ class RedisStreamsBackend:
         """
         try:
             return self._codec.decode(fields)
+        except UnsupportedSchemaVersion as exc:
+            # Distinct from a truly malformed/corrupt entry: the message is
+            # well-formed but carries a schema_version newer than this
+            # reader supports (rolling-upgrade skew — see spec Known Risks).
+            # Still dropped+ACKed (no DLQ hook at the backend layer), but
+            # logged distinctly so operators can tell version skew apart
+            # from poison data.
+            self.logger.error(
+                "Unsupported schema_version on %s %s on %s "
+                "dropped (rolling-upgrade skew?): %s",
+                context, msg_id, stream, exc,
+            )
+            if ack:
+                await self._ack(stream, msg_id)
+            return None
         except Exception as exc:  # noqa: BLE001 — poison entries isolated
             self.logger.error(
                 "Undecodable %s %s on %s dropped: %s",
