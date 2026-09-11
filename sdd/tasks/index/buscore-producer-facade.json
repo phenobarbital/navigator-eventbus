@@ -14,14 +14,14 @@
       "feature_id": "FEAT-433",
       "feature": "buscore-producer-facade",
       "spec": "sdd/specs/buscore-producer-facade.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "L",
       "depends_on": [],
       "parallel": false,
       "parallelism_notes": "Root task. Creates src/navigator_eventbus/producers.py and tests/test_producers.py, both of which every other task in this feature reads or extends. Nothing can start before it.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-1863-buscore-producer-facade.md"
     },
@@ -32,14 +32,16 @@
       "feature_id": "FEAT-433",
       "feature": "buscore-producer-facade",
       "spec": "sdd/specs/buscore-producer-facade.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "S",
-      "depends_on": ["TASK-1863"],
+      "depends_on": [
+        "TASK-1863"
+      ],
       "parallel": true,
       "parallelism_notes": "Touches src/navigator_eventbus/__init__.py, which no other task in this feature modifies. Shares tests/test_producers.py with TASK-1865 only as an append target, so the two conflict at most on a trailing hunk. Safe to run concurrently with TASK-1865 once TASK-1863 lands; the spec's per-spec isolation still runs them sequentially in one worktree by default.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-1864-producer-public-export.md"
     },
@@ -50,14 +52,16 @@
       "feature_id": "FEAT-433",
       "feature": "buscore-producer-facade",
       "spec": "sdd/specs/buscore-producer-facade.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "medium",
       "effort": "S",
-      "depends_on": ["TASK-1863"],
+      "depends_on": [
+        "TASK-1863"
+      ],
       "parallel": true,
       "parallelism_notes": "Test-only; touches no src/ file. Independent of TASK-1864's __init__.py change because it imports from navigator_eventbus.producers directly rather than the package root. Concurrent with TASK-1864 once TASK-1863 lands.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-1865-producer-integration-tests.md"
     },
@@ -68,14 +72,18 @@
       "feature_id": "FEAT-433",
       "feature": "buscore-producer-facade",
       "spec": "sdd/specs/buscore-producer-facade.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "medium",
       "effort": "S",
-      "depends_on": ["TASK-1863", "TASK-1864", "TASK-1865"],
+      "depends_on": [
+        "TASK-1863",
+        "TASK-1864",
+        "TASK-1865"
+      ],
       "parallel": false,
       "parallelism_notes": "Release gate. Its acceptance criteria require the full suite, lint and types green across every other task, so it is meaningless until all three have landed.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-1866-release-0-3-0.md"
     }
