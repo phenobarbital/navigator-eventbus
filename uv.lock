@@ -1830,6 +1830,9 @@ notify = [
 pickle = [
     { name = "cloudpickle" },
 ]
+queues = [
+    { name = "redis" },
+]
 rabbitmq = [
     { name = "aiormq" },
 ]
@@ -1881,12 +1884,13 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "redis", marker = "extra == 'all'", specifier = ">=5" },
     { name = "redis", marker = "extra == 'brokers'", specifier = ">=5" },
+    { name = "redis", marker = "extra == 'queues'", specifier = ">=5" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "watchdog", marker = "extra == 'all'" },
     { name = "watchdog", marker = "extra == 'watchdog'" },
 ]
-provides-extras = ["all", "brokers", "dev", "grpc", "mqtt", "notify", "pickle", "rabbitmq", "redis", "scheduler", "serializer", "sqs", "watchdog"]
+provides-extras = ["all", "brokers", "dev", "grpc", "mqtt", "notify", "pickle", "queues", "rabbitmq", "redis", "scheduler", "serializer", "sqs", "watchdog"]
 
 [[package]]
 name = "numpy"
