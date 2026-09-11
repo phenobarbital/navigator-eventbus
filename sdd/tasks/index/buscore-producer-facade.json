@@ -32,7 +32,7 @@
       "feature_id": "FEAT-433",
       "feature": "buscore-producer-facade",
       "spec": "sdd/specs/buscore-producer-facade.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "S",
       "depends_on": [
@@ -42,7 +42,7 @@
       "parallelism_notes": "Touches src/navigator_eventbus/__init__.py, which no other task in this feature modifies. Shares tests/test_producers.py with TASK-1865 only as an append target, so the two conflict at most on a trailing hunk. Safe to run concurrently with TASK-1865 once TASK-1863 lands; the spec's per-spec isolation still runs them sequentially in one worktree by default.",
       "assigned_to": null,
       "started_at": "2026-09-11T23:37:32+00:00",
-      "completed_at": null,
+      "completed_at": "2026-09-11T23:41:38+00:00",
       "file": "sdd/tasks/active/TASK-1864-producer-public-export.md"
     },
     {
