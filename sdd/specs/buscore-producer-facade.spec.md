@@ -13,7 +13,7 @@ base_branch: main
 **Feature ID**: FEAT-433
 **Date**: 2026-09-12
 **Author**: Jesus Lara
-**Status**: draft
+**Status**: approved
 **Target version**: 0.3.0
 
 > **Input document**: `sdd/specs/buscore-producer-facade.brief.md` (upstream
@@ -64,6 +64,9 @@ FieldSync can delete its local copy once this is released and pinned.
 - Preserve behavioral parity with the shim it replaces, **except** for the
   `body["ts"]` dependency, which is deliberately not carried forward (see §7
   Known Risks).
+- Let a producer instance stamp a fixed `source`, `severity` and `priority` on
+  everything it emits, so events published through the facade are attributable
+  on the bus and are not locked to `INFO`/`NORMAL`.
 - Export `BusCoreProducer` from the package root, mirroring the existing eager
   export convention used for `BusCore` and `CompositeBackend`.
 - Bump the package version so a consuming app can pin the release.
@@ -77,9 +80,13 @@ FieldSync can delete its local copy once this is released and pinned.
 - Any change to any backend (`RedisStreamsBackend`, `CompositeBackend`,
   `RedisPubSubBackend`).
 - A consumer-side counterpart facade. This is producer-only.
-- Implicit `source` stamping, severity/priority selection, or topic derivation
-  — `queue_name` is the raw topic string and the facade adds no routing rules
-  of its own (see §8 Q3 for the priority/severity limitation this implies).
+- Topic derivation or governance — `queue_name` is the raw topic string; the
+  facade adds no prefixing, no `TOPICS.md` validation, and no routing rules of
+  its own.
+- **Per-call** `source` / `severity` / `priority` overrides. These are settable
+  **per producer instance** through the constructor (§8 Q3 resolved), but
+  `publish_event` keeps the brief's exact signature and takes all three from
+  the instance. A caller needing per-event variation holds a second producer.
 - Special-casing any payload field name (notably `ts`) to derive a timestamp.
 
 ---
@@ -94,35 +101,62 @@ every `publish_event()` call, so a bus that is created (or replaced) after the
 producer was constructed is picked up on the next publish without any
 re-wiring.
 
-Each `publish_event()` call:
+Each `publish_event()` call proceeds in two phases, and **the phase boundary is
+the error-policy boundary**:
 
-1. Calls `bus_provider()`. A `None` return is a **failure** routed through the
-   configured error policy — it is not a silent no-op in strict mode.
-2. Builds an `EventEnvelope` with `topic=queue_name` and `payload=body`.
-   `timestamp` comes from a `timestamp: datetime` keyword when supplied, and
-   otherwise is left to `EventEnvelope`'s own `datetime.now(timezone.utc)`
-   default factory (`src/navigator_eventbus/envelope.py:133-135`) — the facade
-   does not compute "now" itself, so there is exactly one definition of it.
-3. Awaits `BusCore.publish(envelope)` inside `async with asyncio.timeout(...)`
-   — the house idiom for bounded awaits in this package
-   (`core.py:560`, `hooks/webhook/preprocess.py:164`,
-   `subscribers/notification.py:516`).
-4. On any failure — missing bus, envelope construction error,
-   `BusCore.publish()` raising (`BusClosedError`, `BackpressureError`, or
-   anything else), or timeout expiry — applies the error policy:
-   - `raise_on_error=True` → propagate to the caller.
-   - `raise_on_error=False` → log and return normally.
+**Phase 1 — request validation (always raises).** Build an `EventEnvelope` with
+`topic=queue_name`, `payload=body`, and `source` / `severity` / `priority` taken
+from the producer instance's configured defaults. `timestamp` comes from a
+`timestamp: datetime` keyword when supplied, and otherwise is left to
+`EventEnvelope`'s own `datetime.now(timezone.utc)` default factory
+(`envelope.py:133-135`) — the facade does not compute "now" itself, so there is
+exactly one definition of it. This phase happens **outside** the error-policy
+`try`, so a malformed request propagates regardless of `raise_on_error`.
 
-**Error-policy uniformity (design decision).** `raise_on_error` governs *every*
-failure inside `publish_event()`, including envelope construction. The
-alternative — letting caller-contract violations (e.g. a naive `datetime`
-passed as `timestamp`, which `EventEnvelope.__post_init__` rejects with
-`ValueError` at `envelope.py:157-162`) always escape — was rejected because it
-gives fail-soft callers two different failure modes to reason about and breaks
-the "a background publisher never raises" contract they opted into. To keep the
-swallowed-bug case visible, construction failures log at **ERROR** with
-`exc_info`, while delivery failures log at **WARNING**. See §8 Q1 — this is the
-one decision in this spec that was not settled by the brief.
+**Phase 2 — delivery (governed by `raise_on_error`).** Call `bus_provider()`;
+a `None` return is a failure, not a silent no-op. Then await
+`BusCore.publish(envelope)` inside `async with asyncio.timeout(...)` — the
+house idiom for bounded awaits in this package (`core.py:560`,
+`hooks/webhook/preprocess.py:164`, `subscribers/notification.py:516`). On any
+failure here — missing bus, `BusCore.publish()` raising (`BusClosedError`,
+`BackpressureError`, or anything else), or timeout expiry:
+
+- `raise_on_error=True` → propagate to the caller.
+- `raise_on_error=False` → log at WARNING with `exc_info` and return normally.
+
+**Why the boundary sits there (design decision, §8 Q1 resolved).** The three
+delivery failures are *operational* — transient, environment-dependent, and
+plausibly resolved on the next call (the bus gets wired, the queue drains).
+A rejected envelope is a *caller bug*: `EventEnvelope.__post_init__` raises
+`ValueError` on a naive `timestamp` (`envelope.py:157-162`) deterministically,
+on every call, forever. Swallowing that is not degraded delivery — it is 100%
+silent event loss on a code path whose defining property is that nobody is
+watching it.
+
+Two considerations settled this:
+
+1. **Asymmetry of recovery.** If the facade raises, a caller wanting total
+   safety wraps the call in `try/except` — recoverable. If the facade swallows,
+   a caller wanting to see the bug has no way to opt in — unrecoverable. The
+   recoverable default wins.
+2. **Internal consistency.** `timeout <= 0` already raises `ValueError` from
+   `__init__` unconditionally. Argument validation that always raises is
+   therefore already this class's rule; routing envelope construction through
+   `raise_on_error` would contradict it.
+
+**Exception types in strict mode** (pinned so tests are deterministic):
+
+| Failure | Raises | Governed by `raise_on_error`? |
+|---|---|---|
+| Naive / non-`datetime` `timestamp` | `ValueError` (from `EventEnvelope`) | **No — always raises** |
+| `timeout <= 0` at construction | `ValueError` (from `__init__`) | **No — always raises** |
+| `bus_provider()` returned `None` | `RuntimeError` | yes |
+| Bus closing | `BusClosedError` | yes |
+| Queue full under `reject` policy | `BackpressureError` | yes |
+| Publish exceeded `timeout` | `TimeoutError` | yes |
+
+Bus exception types are **never flattened** — `BusClosedError` and
+`BackpressureError` reach a strict caller as themselves, not wrapped.
 
 **Cancellation is never swallowed.** `asyncio.CancelledError` derives from
 `BaseException`, so the `except Exception` used by the fail-soft path does not
@@ -133,23 +167,31 @@ catch it; external cancellation of the calling task propagates unchanged.
 ```
 caller ──publish_event(body, queue_name, **kwargs)──→ BusCoreProducer
                                                            │
-                                    ┌──────────────────────┤
-                                    │                      │
-                            bus_provider()          EventEnvelope(
-                                    │                  topic=queue_name,
-                            BusCore | None             payload=body,
-                                    │                  timestamp=kwargs|default)
-                                    │                      │
-                                    └──────┬───────────────┘
-                                           │
-                              async with asyncio.timeout(timeout)
-                                           │
-                                  await BusCore.publish(envelope)
-                                           │
-                              ┌────────────┴────────────┐
-                          success                    failure
-                              │                          │
-                           return          raise_on_error ? raise : log+return
+  PHASE 1 — request validation (always raises)             │
+                                                           ▼
+                                                    EventEnvelope(
+                                                      topic=queue_name,
+                                                      payload=body,
+                                                      timestamp=kwargs|default,
+                                                      source=self._source,
+                                                      severity=self._severity,
+                                                      priority=self._priority)
+                                                           │
+                                        ValueError ────────┤ (escapes: naive ts)
+  ─────────────────────────────────────────────────────────┼──────────────────
+  PHASE 2 — delivery (raise_on_error governs)              ▼
+                                                    bus_provider()
+                                                           │
+                                                   BusCore | None
+                                                           │
+                                        async with asyncio.timeout(timeout)
+                                                           │
+                                              await BusCore.publish(envelope)
+                                                           │
+                                        ┌──────────────────┴──────────────────┐
+                                    success                                failure
+                                        │                                      │
+                                     return                 raise_on_error ? raise : log+return
 ```
 
 ### Integration Points
@@ -175,6 +217,8 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 from navigator_eventbus.core import BusCore
+from navigator_eventbus.envelope import Severity
+from navigator_eventbus.evb import EventPriority
 
 
 class BusCoreProducer:
@@ -192,6 +236,9 @@ class BusCoreProducer:
         *,
         timeout: float = 1.0,
         raise_on_error: bool = False,
+        source: Optional[str] = None,
+        severity: Severity = Severity.INFO,
+        priority: EventPriority = EventPriority.NORMAL,
     ) -> None: ...
 
     async def publish_event(
@@ -202,12 +249,30 @@ class BusCoreProducer:
     ) -> None: ...
 ```
 
+**Constructor envelope defaults (§8 Q3 resolved).** `source`, `severity` and
+`priority` configure the producer *instance*; every envelope it emits carries
+them. `source` is the load-bearing one — without it every event this facade
+publishes is unattributable on the bus, and `EventEnvelope.source` exists
+precisely to answer "who emitted this". `severity` and `priority` remove the
+ceiling that would otherwise force any caller needing a non-`NORMAL` publish to
+bypass the facade entirely.
+
+This does **not** violate the brief's `**kwargs` rule. That rule forbids
+encoding *application-specific* meaning into undocumented legacy keys (the `ts`
+problem). `source` / `severity` / `priority` are core navigator-eventbus
+concepts exposed as explicit, documented, keyword-only constructor parameters —
+and `publish_event`'s signature stays exactly as the brief specifies.
+
 **`publish_event` contract:**
 
 - `body` becomes `EventEnvelope.payload` verbatim (no copy, no mutation, no
   key inspection).
 - `queue_name` becomes `EventEnvelope.topic` verbatim (no prefixing, no
   validation against `TOPICS.md`).
+- `source`, `severity` and `priority` come from the producer instance's
+  configured defaults on **every** envelope. They are not readable from
+  `kwargs` — a caller passing `severity=...` to `publish_event` is ignored like
+  any other legacy key (see §7 gotchas).
 - `kwargs` is accepted for call-site compatibility with older duck-typed
   producer seams. **Exactly one key is honoured**: `timestamp`, when its value
   is a `datetime`, populates `EventEnvelope.timestamp`. Every other key —
@@ -230,8 +295,12 @@ class BusCoreProducer:
 - **Responsibility**: The facade class described in §2 — lazy bus resolution,
   envelope construction, bounded publish, error policy, logging.
 - **Depends on**: `navigator_eventbus.core.BusCore` (type only),
-  `navigator_eventbus.envelope.EventEnvelope` (constructed). No new external
-  dependency.
+  `navigator_eventbus.envelope.EventEnvelope` (constructed),
+  `navigator_eventbus.envelope.Severity` and `navigator_eventbus.evb.EventPriority`
+  (constructor default values). No new external dependency.
+- **Import-cycle note**: `envelope.py` already imports `EventPriority` from
+  `evb.py` (`envelope.py:21`), and nothing imports `producers.py`, so this new
+  leaf module introduces no cycle.
 
 ### Module 2: Public export
 - **Path**: `src/navigator_eventbus/__init__.py` *(modified)*
@@ -273,14 +342,19 @@ class BusCoreProducer:
 | `test_missing_bus_strict_raises` | 1 | Same with `raise_on_error=True`: propagates. |
 | `test_publish_exception_fail_soft` | 1 | Fake bus raises `BusClosedError`, `raise_on_error=False`: swallowed. |
 | `test_publish_exception_strict_raises` | 1 | Same with `raise_on_error=True`: the original exception reaches the caller. |
-| `test_backpressure_error_propagates_strict` | 1 | Fake bus raises `BackpressureError`; strict mode propagates it (guards that the facade does not flatten bus exception types). |
+| `test_backpressure_error_propagates_strict` | 1 | Fake bus raises `BackpressureError`; strict mode propagates it **as itself** (guards that the facade does not flatten or wrap bus exception types). |
+| `test_missing_bus_raises_runtime_error` | 1 | Strict mode with `bus_provider()` → `None` raises `RuntimeError` specifically, per the §2 exception-type table. |
 | `test_timeout_fail_soft` | 1 | Fake bus `publish` sleeps past `timeout`, `raise_on_error=False`: returns normally within the bound. |
 | `test_timeout_strict_raises` | 1 | Same with `raise_on_error=True`: raises `TimeoutError`. |
 | `test_legacy_kwargs_accepted` | 1 | `publish_event(body, topic, routing_key="x", whatever=1)` does not raise, and neither key influences `topic` or `payload`. |
 | `test_explicit_timestamp_kwarg_is_used` | 1 | A tz-aware `datetime` passed as `timestamp=` lands on `envelope.timestamp`. |
 | `test_default_timestamp_is_now` | 1 | With no `timestamp=`, `envelope.timestamp` is tz-aware and close to now. |
 | `test_ts_field_in_body_is_not_special_cased` | 1 | `body={"ts": <some datetime/str>}` does **not** influence `envelope.timestamp`; `ts` survives untouched inside `payload`. Directly guards the §7 risk. |
-| `test_naive_timestamp_kwarg_error_policy` | 1 | Naive `datetime` → strict raises `ValueError`; fail-soft swallows. Pins the §2 uniformity decision. |
+| `test_naive_timestamp_always_raises` | 1 | Naive `datetime` passed as `timestamp=` raises `ValueError` in **both** modes — parametrize over `raise_on_error=[True, False]`. Pins the §2 phase boundary. |
+| `test_bad_timestamp_type_is_ignored` | 1 | `timestamp="2026-01-01"` (a `str`, not a `datetime`) is ignored as a legacy key and the envelope takes the default "now" — it does **not** reach `EventEnvelope` and does **not** raise. Guards the `isinstance` check. |
+| `test_constructor_source_stamped_on_envelope` | 1 | `BusCoreProducer(..., source="svc")` → `envelope.source == "svc"`; default is `None`. |
+| `test_constructor_severity_and_priority_stamped` | 1 | Non-default `Severity.ERROR` / `EventPriority.HIGH` reach the envelope; defaults are `INFO` / `NORMAL`. |
+| `test_severity_kwarg_is_ignored_not_honoured` | 1 | `publish_event(body, topic, severity=Severity.CRITICAL)` does **not** override the instance default — proves `kwargs` is inert and the only path is the constructor. |
 | `test_cancellation_is_not_swallowed` | 1 | Cancelling the calling task while `publish` is in flight propagates `CancelledError` even with `raise_on_error=False`. |
 | `test_invalid_timeout_rejected_at_init` | 1 | `timeout=0` and `timeout=-1` raise `ValueError` from `__init__`. |
 | `test_producer_exported_from_root` | 2 | `from navigator_eventbus import BusCoreProducer` works and the name is in `__all__`. |
@@ -290,7 +364,8 @@ class BusCoreProducer:
 
 | Test | Description |
 |---|---|
-| `test_publish_through_real_buscore` | Construct a real `BusCore`, `start()` it, subscribe a recording handler, publish via `BusCoreProducer`, assert the handler receives the topic and payload. Memory only — no backend, no Redis. |
+| `test_publish_through_real_buscore` | Construct a real `BusCore`, `start()` it, subscribe a recording handler, publish via `BusCoreProducer`, assert the handler receives the topic, payload **and the configured `source`**. Memory only — no backend, no Redis. |
+| `test_high_priority_routes_through_priority_queue` | A producer built with `priority=EventPriority.HIGH` publishes to a real `BusCore`; assert the received envelope's `.priority` is `HIGH`, proving the constructor default reaches the dispatch path and is not dropped. |
 
 ### Test Data / Fixtures
 
@@ -337,9 +412,15 @@ or in `pyproject.toml`.
       memoized at `__init__` — proven by the provider returning `None` first
       and a working bus later, with the later call succeeding.
 - [ ] Strict (`raise_on_error=True`) vs fail-soft (`raise_on_error=False`)
-      behavior is unit tested for all four failure sources: missing bus,
-      `BusCore.publish()` raising, timeout expiry, and envelope construction
-      failure.
+      behavior is unit tested for all three **delivery** failure sources:
+      missing bus, `BusCore.publish()` raising, and timeout expiry.
+- [ ] **Request-validation failures always raise**, in both modes: a naive or
+      non-`datetime` value reaching `EventEnvelope` raises `ValueError`, and
+      `timeout <= 0` raises `ValueError` from `__init__`. Neither is governed
+      by `raise_on_error`.
+- [ ] Strict-mode exception types match the §2 table exactly: `RuntimeError`
+      for a missing bus, `TimeoutError` for timeout expiry, and
+      `BusClosedError` / `BackpressureError` propagated unwrapped.
 - [ ] `asyncio.CancelledError` propagates in fail-soft mode.
 - [ ] Legacy keyword arguments (e.g. `routing_key`) are accepted without
       raising `TypeError` and without influencing `topic` or `payload`.
@@ -347,6 +428,11 @@ or in `pyproject.toml`.
       with no such keyword the envelope's own default factory supplies it.
 - [ ] A `ts` key inside `body` has no effect on `envelope.timestamp` and is
       passed through untouched in `payload`.
+- [ ] `source`, `severity` and `priority` are keyword-only constructor
+      parameters defaulting to `None` / `Severity.INFO` /
+      `EventPriority.NORMAL`, and each reaches every published envelope.
+- [ ] Passing `severity=` / `priority=` / `source=` to `publish_event` does
+      **not** override the instance defaults — `kwargs` remains inert.
 - [ ] `from navigator_eventbus import BusCoreProducer` works; the name is in
       `__all__`; it is an **eager** export, not routed through the lazy
       `__getattr__` queue map.
@@ -356,7 +442,8 @@ or in `pyproject.toml`.
 - [ ] The full suite still passes: `pytest -q`.
 - [ ] Lint and types clean on the changed files: `ruff check` and `mypy` on
       `src/navigator_eventbus/producers.py`.
-- [ ] `src/navigator_eventbus/version.py` bumped to `0.3.0`.
+- [ ] `src/navigator_eventbus/version.py` bumped to `0.3.0` — the only place
+      the version is written (`pyproject.toml` reads it dynamically).
 - [ ] Google-style docstrings and strict type hints on every public method
       (project standard, `CLAUDE.md` §Code Standards).
 
@@ -514,12 +601,25 @@ required fields. They all carry defaults (lines 132-142). Only `topic` and
   `body["ts"]` must start passing `timestamp=` explicitly, or they will
   silently begin stamping "now". This must be called out in the release notes
   — it is the one place where parity is intentionally broken.
-- **`**kwargs` swallows typos.** Accepting arbitrary keywords means
-  `publish_event(body, topic, timestmap=x)` is silently ignored rather than a
-  `TypeError`. That is the explicit price of call-site compatibility with the
-  duck-typed seams this replaces. *Mitigation*: document it in the docstring;
-  consider a `DEBUG`-level log of unrecognised keys (no warning — legacy keys
-  like `routing_key` are expected and must not generate noise).
+- **`**kwargs` swallows typos, and now also swallows plausible-looking envelope
+  fields.** Accepting arbitrary keywords means `publish_event(body, topic,
+  timestmap=x)` is silently ignored rather than a `TypeError`. With §8 Q3
+  resolved toward constructor defaults, this extends to a sharper trap:
+  `publish_event(body, topic, severity=Severity.CRITICAL)` looks like it should
+  work and silently does nothing, because `severity` is configured per instance.
+  That is the explicit price of call-site compatibility with the duck-typed
+  seams this replaces. *Mitigation*: state it plainly in the `publish_event`
+  docstring ("only `timestamp` is read from `**kwargs`; `source`, `severity`
+  and `priority` are per-instance constructor arguments"); emit a `DEBUG`-level
+  log of unrecognised keys (DEBUG, not WARNING — legacy keys like
+  `routing_key` are expected and must not generate noise); and pin the
+  behaviour with `test_severity_kwarg_is_ignored_not_honoured`.
+- **`timestamp` is type-checked, not coerced.** Only an `isinstance(...,
+  datetime)` value is forwarded; a `str` or `float` is treated as an
+  unrecognised legacy key and the envelope falls back to "now". This keeps the
+  facade out of the date-parsing business, but means a caller passing an ISO
+  string gets a silently wrong timestamp rather than an error. Documented in
+  the docstring and pinned by `test_bad_timestamp_type_is_ignored`.
 - **The default `timeout=1.0` interacts with the `block` backpressure policy.**
   Under a saturated queue with the default policy, `publish()` waits for space;
   the producer will convert that into a timeout after 1 s. A fail-soft caller
@@ -560,28 +660,35 @@ required fields. They all carry defaults (lines 132-142). Only `topic` and
 - [x] Eager or lazy package export? — *Resolved by codebase research*: eager,
       mirroring `BusCore`. The `_QUEUE_EXPORTS` lazy map exists only to defer
       the optional queue machinery, which `producers.py` does not touch.
-- [ ] **Q1 — Does `raise_on_error` govern envelope *construction* failure, or
-      only *delivery* failure?** The brief enumerates three failure sources
-      (missing bus, `publish()` raising, timeout) and is silent on a fourth:
-      `EventEnvelope.__post_init__` rejecting a naive `timestamp` with
-      `ValueError` (`envelope.py:157-162`). This spec picks **uniform** —
-      `raise_on_error` governs all four, with construction failures logged at
-      ERROR rather than WARNING so the bug stays visible. The alternative is
-      to let caller-contract violations always escape. — *Owner: Jesus Lara*
-- [ ] **Q2 — Version bump: `0.3.0` or `0.2.5`?** This spec targets `0.3.0`
-      because it adds a new public interface, and a minor bump is a clearer
-      pin target for FieldSync than another patch. Current version is `0.2.4`
-      (`version.py:7`). — *Owner: Jesus Lara*
-- [ ] **Q3 — Should `priority` / `severity` / `source` be settable?** As
-      specified, every envelope this facade produces is `Severity.INFO` /
-      `EventPriority.NORMAL` / `source=None`, because only `timestamp` is
-      honoured from `kwargs`. An application that needs a `HIGH`-priority
-      publish cannot use this facade at all and must call `BusCore.publish()`
-      directly. That matches the brief's minimal scope, but it is a real
-      ceiling — worth confirming it is intended rather than an oversight, and
-      whether constructor-level defaults (e.g. `source="fieldsync"` fixed per
-      producer instance) would be a better fit than per-call kwargs. —
-      *Owner: Jesus Lara*
+- [x] **Q1 — Does `raise_on_error` govern envelope *construction* failure, or
+      only *delivery* failure?** — *Resolved 2026-09-12, Jesus Lara*:
+      **only delivery failure.** Request validation always raises, in both
+      modes; `raise_on_error` governs the three operational failures (missing
+      bus, `publish()` raising, timeout). Rationale, the strict-mode exception
+      types, and the phase boundary are in §2 "Why the boundary sits there".
+      This reverses the draft's original "uniform" default — the deciding
+      arguments were the asymmetry of recovery (a raising facade is
+      recoverable by the caller; a swallowing one is not) and internal
+      consistency with `timeout <= 0` already raising from `__init__`.
+- [x] **Q2 — Version bump: `0.3.0` or `0.2.5`?** — *Resolved 2026-09-12,
+      Jesus Lara*: **`0.3.0`**. Current is `0.2.4` (`version.py:7`). Repo
+      history shows both patterns (0.2.2 and 0.2.3 shipped features as patch
+      bumps), but the one minor bump — `0.2.0`, commit `8889f91` — marked new
+      public surface, which is what this is: a new top-level name in
+      `__all__`. Adding a parameter to an existing class and adding a class
+      are different events.
+- [x] **Q3 — Should `priority` / `severity` / `source` be settable?** —
+      *Resolved 2026-09-12, Jesus Lara*: **yes, as keyword-only constructor
+      arguments** (`source=None`, `severity=Severity.INFO`,
+      `priority=EventPriority.NORMAL`). `publish_event`'s signature is
+      unchanged from the brief, and `**kwargs` stays inert. The decisive
+      factor was `source`: leaving it `None` makes every event from this
+      facade unattributable on the bus, which is an observability hole rather
+      than a scope reduction. Per-call overrides were considered and deferred
+      — they can be added later as additive keyword-only parameters without
+      breaking this contract.
+
+> No open questions remain. The spec is ready for `/sdd-task`.
 
 ---
 
@@ -613,3 +720,4 @@ required fields. They all carry defaults (lines 132-142). Only `topic` and
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 0.1 | 2026-09-12 | Jesus Lara | Initial draft from `buscore-producer-facade.brief.md` (FieldSync FEAT-577); codebase contract verified against `main` @ 273078d |
+| 0.2 | 2026-09-12 | Jesus Lara | Resolved Q1/Q2/Q3. Q1: request validation always raises, `raise_on_error` governs delivery only (reverses the draft default) — §2 rewritten into two phases with a strict-mode exception-type table. Q2: target `0.3.0`. Q3: `source`/`severity`/`priority` added as keyword-only constructor defaults. §1, §3, §4, §5, §7 updated to match. Status → approved. |
