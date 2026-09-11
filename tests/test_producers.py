@@ -292,3 +292,21 @@ def test_producers_module_is_application_neutral():
     text = src.read_text()
     assert "fieldsync" not in text.lower()
     assert '"ts"' not in text and "'ts'" not in text
+
+
+# --------------------------------------------------------------------------
+# Root export (TASK-1864)
+# --------------------------------------------------------------------------
+
+
+def test_producer_exported_from_root():
+    """BusCoreProducer is an eager, first-class root export."""
+    import navigator_eventbus
+    from navigator_eventbus import BusCoreProducer
+    from navigator_eventbus.producers import BusCoreProducer as Direct
+
+    assert BusCoreProducer is Direct
+    assert "BusCoreProducer" in navigator_eventbus.__all__
+    # Eager, not __getattr__-resolved: a lazily-mapped name is absent from dir().
+    assert "BusCoreProducer" in dir(navigator_eventbus)
+    assert "BusCoreProducer" not in navigator_eventbus._QUEUE_EXPORTS

@@ -25,6 +25,7 @@ from navigator_eventbus.envelope import (
 )
 from navigator_eventbus.evb import Event, EventBus, EventPriority, EventSubscription
 from navigator_eventbus.ingress_models import IngressEnvelope
+from navigator_eventbus.producers import BusCoreProducer
 from navigator_eventbus.version import (
     __author__,
     __author_email__,
@@ -54,6 +55,7 @@ __all__ = [
     "BackpressureError",
     "BusClosedError",
     "BusCore",
+    "BusCoreProducer",
     "CompositeBackend",
     "DLQHandler",
     "ENVELOPE_SCHEMA_VERSION",
