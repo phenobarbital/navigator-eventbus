@@ -5,7 +5,7 @@
   "type": "feature",
   "base_branch": "main",
   "created_at": "2026-09-12T00:00:00Z",
-  "completed_at": null,
+  "completed_at": "2026-09-11T23:43:36+00:00",
   "tasks": [
     {
       "id": "TASK-1863",
@@ -72,7 +72,7 @@
       "feature_id": "FEAT-433",
       "feature": "buscore-producer-facade",
       "spec": "sdd/specs/buscore-producer-facade.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "medium",
       "effort": "S",
       "depends_on": [
@@ -84,7 +84,7 @@
       "parallelism_notes": "Release gate. Its acceptance criteria require the full suite, lint and types green across every other task, so it is meaningless until all three have landed.",
       "assigned_to": null,
       "started_at": "2026-09-11T23:37:32+00:00",
-      "completed_at": null,
+      "completed_at": "2026-09-11T23:43:36+00:00",
       "file": "sdd/tasks/active/TASK-1866-release-0-3-0.md"
     }
   ]

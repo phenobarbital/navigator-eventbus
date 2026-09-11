@@ -191,10 +191,32 @@ python -c "import navigator_eventbus as n; print(n.__version__, n.BusCoreProduce
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude Sonnet 5)
+**Date**: 2026-09-12
+**Notes**: Bumped `__version__` from `0.2.4` to `0.3.0` in
+`src/navigator_eventbus/version.py` — the only line changed. Verification
+logs saved to `artifacts/logs/TASK-1866-{pytest,ruff,mypy,version-check}.log`:
+`pytest -q` → 799 passed / 18 skipped; `ruff check src/navigator_eventbus/`
+→ all checks passed; `mypy src/navigator_eventbus/producers.py` → no
+issues; `python -c "import navigator_eventbus as n; print(n.__version__,
+n.BusCoreProducer)"` → `0.3.0 <class
+'navigator_eventbus.producers.BusCoreProducer'>`. `tests/test_package.py`
+passes unmodified. `pyproject.toml` still declares `dynamic = ["version"]`
+with no hard-coded version key. All of spec §5's acceptance criteria are
+satisfied across TASK-1863..1866.
 
-**Completed by**:
-**Date**:
-**Notes**:
+**Migration notes for the PR body (required per spec §7 / task instructions):**
 
-**Deviations from spec**: none | describe if any
+1. **`body["ts"]` is no longer read.** The FieldSync shim being replaced
+   populated the timestamp from a FieldSync-specific `body["ts"]` field.
+   `BusCoreProducer` deliberately does not. Call sites that relied on it
+   will **silently start stamping "now"** instead of erroring — they must
+   pass `timestamp=<tz-aware datetime>` explicitly to `publish_event`.
+2. **`source` / `severity` / `priority` are constructor-only.** They are
+   per-producer-instance arguments. Passing them to `publish_event` is
+   silently ignored (`**kwargs` is inert apart from `timestamp`). A
+   migrating call site should construct
+   `BusCoreProducer(get_bus, source="<service-name>")` rather than leaving
+   `source=None`, or every event it emits is unattributable on the bus.
+
+**Deviations from spec**: none
