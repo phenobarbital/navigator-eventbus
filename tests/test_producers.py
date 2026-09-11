@@ -5,12 +5,13 @@ so plain ``async def test_*`` functions run without a decorator.
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from navigator_eventbus.core import BackpressureError, BusClosedError
+from navigator_eventbus.core import BackpressureError, BusClosedError, BusCore
 from navigator_eventbus.envelope import EventEnvelope, Severity
 from navigator_eventbus.evb import EventPriority
 from navigator_eventbus.producers import BusCoreProducer
@@ -310,3 +311,58 @@ def test_producer_exported_from_root():
     # Eager, not __getattr__-resolved: a lazily-mapped name is absent from dir().
     assert "BusCoreProducer" in dir(navigator_eventbus)
     assert "BusCoreProducer" not in navigator_eventbus._QUEUE_EXPORTS
+
+
+# --------------------------------------------------------------------------
+# Integration tests against a real BusCore (TASK-1865)
+# --------------------------------------------------------------------------
+
+
+async def wait_until(condition, timeout: float = 3.0) -> None:
+    """Copied from tests/test_integration.py:22 — dispatch is asynchronous."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail("condition not met within timeout")
+
+
+class TestBusCoreProducerIntegration:
+    """Exercises BusCoreProducer against a real, started, in-memory BusCore."""
+
+    async def test_publish_through_real_buscore(self):
+        """Envelope reaches a subscriber with topic, payload and source intact."""
+        bus = BusCore(workers=2)
+        await bus.start()
+        try:
+            received: list[EventEnvelope] = []
+            bus.subscribe("test.topic", lambda env: received.append(env))
+
+            producer = BusCoreProducer(lambda: bus, source="test-svc")
+            await producer.publish_event({"k": "v"}, "test.topic")
+
+            await wait_until(lambda: received)
+            assert received[0].topic == "test.topic"
+            assert received[0].payload == {"k": "v"}
+            assert received[0].source == "test-svc"
+        finally:
+            await bus.close()
+
+    async def test_high_priority_routes_through_priority_queue(self):
+        """A HIGH-priority producer's envelope arrives with .priority == HIGH."""
+        bus = BusCore(workers=2)
+        await bus.start()
+        try:
+            received: list[EventEnvelope] = []
+            bus.subscribe("test.priority", lambda env: received.append(env))
+
+            producer = BusCoreProducer(
+                lambda: bus, source="test-svc", priority=EventPriority.HIGH
+            )
+            await producer.publish_event({"k": "v"}, "test.priority")
+
+            await wait_until(lambda: received)
+            assert received[0].priority is EventPriority.HIGH
+        finally:
+            await bus.close()
