@@ -14,7 +14,7 @@
       "feature_id": "FEAT-433",
       "feature": "buscore-producer-facade",
       "spec": "sdd/specs/buscore-producer-facade.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "L",
       "depends_on": [],
@@ -22,7 +22,7 @@
       "parallelism_notes": "Root task. Creates src/navigator_eventbus/producers.py and tests/test_producers.py, both of which every other task in this feature reads or extends. Nothing can start before it.",
       "assigned_to": null,
       "started_at": "2026-09-11T23:37:32+00:00",
-      "completed_at": null,
+      "completed_at": "2026-09-11T23:40:35+00:00",
       "file": "sdd/tasks/active/TASK-1863-buscore-producer-facade.md"
     },
     {
