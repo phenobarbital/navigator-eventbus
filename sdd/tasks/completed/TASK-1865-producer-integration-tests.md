@@ -239,10 +239,13 @@ class TestBusCoreProducerIntegration:
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude Sonnet 5)
+**Date**: 2026-09-12
+**Notes**: Appended `TestBusCoreProducerIntegration` (2 tests) plus the
+`wait_until` helper to `tests/test_producers.py`, exercising
+`BusCoreProducer` against a real, started, memory-only `BusCore`. Both
+tests close the bus in a `finally` block. Full `tests/test_producers.py`
+(25 tests) and full suite (`pytest -q`, 799 passed / 18 skipped) green;
+`ruff check` clean.
 
-**Completed by**:
-**Date**:
-**Notes**:
-
-**Deviations from spec**: none | describe if any
+**Deviations from spec**: none

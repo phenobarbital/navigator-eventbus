@@ -355,10 +355,16 @@ inner publish — e.g. `task = asyncio.create_task(producer.publish_event(...))`
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+**Completed by**: sdd-worker (Claude Sonnet 5)
+**Date**: 2026-09-12
+**Notes**: Implemented `BusCoreProducer` per spec §2 two-phase design
+(validation always raises / delivery governed by `raise_on_error`), with
+all 22 unit tests (20 required + 2 from the parametrized naive-timestamp
+test) passing, `ruff check` clean, `mypy` clean, and the full suite
+(`pytest -q`) green at 796 passed / 18 skipped. Had to locally copy
+`env/dev/.env` (gitignored, not part of the worktree by design) and create
+a Python 3.11 `.venv` via `uv venv --python 3.11 && uv sync --all-extras`
+to get the test suite running in this fresh worktree — this is
+environment bootstrap only, not a spec deviation.
 
-**Completed by**:
-**Date**:
-**Notes**:
-
-**Deviations from spec**: none | describe if any
+**Deviations from spec**: none
