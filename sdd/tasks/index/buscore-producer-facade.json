@@ -1,0 +1,91 @@
+{
+  "feature": "buscore-producer-facade",
+  "feature_id": "FEAT-433",
+  "spec": "sdd/specs/buscore-producer-facade.spec.md",
+  "type": "feature",
+  "base_branch": "main",
+  "created_at": "2026-09-12T00:00:00Z",
+  "completed_at": "2026-09-11T23:43:36+00:00",
+  "tasks": [
+    {
+      "id": "TASK-1863",
+      "slug": "buscore-producer-facade",
+      "title": "Implement BusCoreProducer with unit tests",
+      "feature_id": "FEAT-433",
+      "feature": "buscore-producer-facade",
+      "spec": "sdd/specs/buscore-producer-facade.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "L",
+      "depends_on": [],
+      "parallel": false,
+      "parallelism_notes": "Root task. Creates src/navigator_eventbus/producers.py and tests/test_producers.py, both of which every other task in this feature reads or extends. Nothing can start before it.",
+      "assigned_to": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
+      "completed_at": "2026-09-11T23:40:35+00:00",
+      "file": "sdd/tasks/active/TASK-1863-buscore-producer-facade.md"
+    },
+    {
+      "id": "TASK-1864",
+      "slug": "producer-public-export",
+      "title": "Export BusCoreProducer from the package root",
+      "feature_id": "FEAT-433",
+      "feature": "buscore-producer-facade",
+      "spec": "sdd/specs/buscore-producer-facade.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "S",
+      "depends_on": [
+        "TASK-1863"
+      ],
+      "parallel": true,
+      "parallelism_notes": "Touches src/navigator_eventbus/__init__.py, which no other task in this feature modifies. Shares tests/test_producers.py with TASK-1865 only as an append target, so the two conflict at most on a trailing hunk. Safe to run concurrently with TASK-1865 once TASK-1863 lands; the spec's per-spec isolation still runs them sequentially in one worktree by default.",
+      "assigned_to": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
+      "completed_at": "2026-09-11T23:41:38+00:00",
+      "file": "sdd/tasks/active/TASK-1864-producer-public-export.md"
+    },
+    {
+      "id": "TASK-1865",
+      "slug": "producer-integration-tests",
+      "title": "Integration tests against a real BusCore",
+      "feature_id": "FEAT-433",
+      "feature": "buscore-producer-facade",
+      "spec": "sdd/specs/buscore-producer-facade.spec.md",
+      "status": "done",
+      "priority": "medium",
+      "effort": "S",
+      "depends_on": [
+        "TASK-1863"
+      ],
+      "parallel": true,
+      "parallelism_notes": "Test-only; touches no src/ file. Independent of TASK-1864's __init__.py change because it imports from navigator_eventbus.producers directly rather than the package root. Concurrent with TASK-1864 once TASK-1863 lands.",
+      "assigned_to": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
+      "completed_at": "2026-09-11T23:42:39+00:00",
+      "file": "sdd/tasks/active/TASK-1865-producer-integration-tests.md"
+    },
+    {
+      "id": "TASK-1866",
+      "slug": "release-0-3-0",
+      "title": "Bump to 0.3.0 and prepare the release",
+      "feature_id": "FEAT-433",
+      "feature": "buscore-producer-facade",
+      "spec": "sdd/specs/buscore-producer-facade.spec.md",
+      "status": "done",
+      "priority": "medium",
+      "effort": "S",
+      "depends_on": [
+        "TASK-1863",
+        "TASK-1864",
+        "TASK-1865"
+      ],
+      "parallel": false,
+      "parallelism_notes": "Release gate. Its acceptance criteria require the full suite, lint and types green across every other task, so it is meaningless until all three have landed.",
+      "assigned_to": null,
+      "started_at": "2026-09-11T23:37:32+00:00",
+      "completed_at": "2026-09-11T23:43:36+00:00",
+      "file": "sdd/tasks/active/TASK-1866-release-0-3-0.md"
+    }
+  ]
+}
