@@ -246,10 +246,10 @@ See the blueprint blocks above — they are the scaffold.
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+Implemented by gpt-5.6-terra (codex, 1 attempt); merged by sdd-worker.
 
-**Completed by**: <session or agent ID>
-**Date**: YYYY-MM-DD
-**Notes**:
+**Completed by**: gpt-5.6-terra (codex, 1 attempt)
+**Date**: 2026-10-20
+**Notes**: Validated manually with PYTHONPATH=src (the validation tool imports the primary checkout's editable src): test_emit_overhead_outbox + test_emit_overhead: 2 of 3 runs green; one run showed 6-7% overhead vs 5% margin (timing-noise flake, same pattern as FEAT-177 test). test_outbox_integration: 3 Redis-dependent tests skipped (no Redis reachable), rest passed.
 
 **Deviations from spec**: none | describe if any

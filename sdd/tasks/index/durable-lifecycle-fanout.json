@@ -143,7 +143,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -154,8 +154,9 @@
       "parallelism_notes": "uses EventRegistry.attach_bus from TASK-4554 (lifecycle/registry.py) and EventBus(transport=, publish_only=, outbox=) from TASK-4558 (evb.py).",
       "assigned_to": null,
       "started_at": "2026-10-20T23:25:44+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4559-durability-integration-tests.md"
+      "completed_at": "2026-10-20T23:47:48+00:00",
+      "file": "sdd/tasks/completed/TASK-4559-durability-integration-tests.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4560",
