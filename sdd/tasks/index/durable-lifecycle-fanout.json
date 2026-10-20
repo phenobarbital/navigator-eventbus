@@ -5,7 +5,7 @@
   "type": "feature",
   "base_branch": "dev",
   "created_at": "2026-10-20T23:01:16+00:00",
-  "completed_at": null,
+  "completed_at": "2026-10-20T23:48:36+00:00",
   "parallel_semantics": "exclusive",
   "validation_contract": "required",
   "test_contract": {
@@ -165,7 +165,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "medium",
       "effort": "S",
       "depends_on": [
@@ -175,8 +175,9 @@
       "parallelism_notes": "documents the merged API and defaults; runs after TASK-4559 so the release notes describe the verified end-to-end behavior.",
       "assigned_to": null,
       "started_at": "2026-10-20T23:25:44+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4560-release-0-4-0.md"
+      "completed_at": "2026-10-20T23:48:36+00:00",
+      "file": "sdd/tasks/completed/TASK-4560-release-0-4-0.md",
+      "verification": "verified"
     }
   ]
 }
