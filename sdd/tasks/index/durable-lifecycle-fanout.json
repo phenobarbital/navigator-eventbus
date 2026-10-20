@@ -41,14 +41,14 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "M",
       "depends_on": [],
       "parallel": true,
       "parallelism_notes": "No dependencies: edits only lifecycle/registry.py and a new test file; runs alongside TASK-4555 (outbox.py).",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-10-20T23:25:44+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4554-registry-bus-hook.md"
     },
@@ -59,14 +59,14 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "M",
       "depends_on": [],
       "parallel": true,
       "parallelism_notes": "No dependencies: creates outbox.py (stdlib sqlite3) and exports it from __init__.py; disjoint from TASK-4554's registry.py.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-10-20T23:25:44+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4555-outbox-store.md"
     },
@@ -77,7 +77,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "L",
       "depends_on": [
@@ -86,7 +86,7 @@
       "parallel": true,
       "parallelism_notes": "imports OutboxStore/OutboxFullError and tests with SqliteOutbox from TASK-4555 (src/navigator_eventbus/outbox.py).",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-10-20T23:25:44+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4556-buscore-outbox-relay.md"
     },
@@ -97,7 +97,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "medium",
       "effort": "S",
       "depends_on": [
@@ -106,7 +106,7 @@
       "parallel": true,
       "parallelism_notes": "TASK-4556 also modifies src/navigator_eventbus/core.py (same __init__ signature and start()); serialized after it, and anchors on its relay_max_backoff kwarg.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-10-20T23:25:44+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4557-publish-only-mode.md"
     },
@@ -117,7 +117,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -127,7 +127,7 @@
       "parallel": true,
       "parallelism_notes": "builds SqliteOutbox from TASK-4555 (outbox.py) and forwards outbox=/relay_interval=/publish_only= to the BusCore kwargs added by TASK-4556/TASK-4557 (core.py).",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-10-20T23:25:44+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4558-eventbus-transport-selection.md"
     },
@@ -138,7 +138,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -148,7 +148,7 @@
       "parallel": true,
       "parallelism_notes": "uses EventRegistry.attach_bus from TASK-4554 (lifecycle/registry.py) and EventBus(transport=, publish_only=, outbox=) from TASK-4558 (evb.py).",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-10-20T23:25:44+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4559-durability-integration-tests.md"
     },
@@ -159,7 +159,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "medium",
       "effort": "S",
       "depends_on": [
@@ -168,7 +168,7 @@
       "parallel": true,
       "parallelism_notes": "documents the merged API and defaults; runs after TASK-4559 so the release notes describe the verified end-to-end behavior.",
       "assigned_to": null,
-      "started_at": null,
+      "started_at": "2026-10-20T23:25:44+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4560-release-0-4-0.md"
     }
