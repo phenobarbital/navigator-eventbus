@@ -100,7 +100,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "medium",
       "effort": "S",
       "depends_on": [
@@ -110,8 +110,9 @@
       "parallelism_notes": "TASK-4556 also modifies src/navigator_eventbus/core.py (same __init__ signature and start()); serialized after it, and anchors on its relay_max_backoff kwarg.",
       "assigned_to": null,
       "started_at": "2026-10-20T23:25:44+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4557-publish-only-mode.md"
+      "completed_at": "2026-10-20T23:38:23+00:00",
+      "file": "sdd/tasks/completed/TASK-4557-publish-only-mode.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4558",
