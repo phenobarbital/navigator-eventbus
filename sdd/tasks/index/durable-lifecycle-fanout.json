@@ -121,7 +121,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -132,8 +132,9 @@
       "parallelism_notes": "builds SqliteOutbox from TASK-4555 (outbox.py) and forwards outbox=/relay_interval=/publish_only= to the BusCore kwargs added by TASK-4556/TASK-4557 (core.py).",
       "assigned_to": null,
       "started_at": "2026-10-20T23:25:44+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4558-eventbus-transport-selection.md"
+      "completed_at": "2026-10-20T23:42:19+00:00",
+      "file": "sdd/tasks/completed/TASK-4558-eventbus-transport-selection.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4559",
