@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"
+  },
   "hooks": {
     "Stop": [
       {
@@ -22,6 +25,29 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob|Read|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/jesuslara/proyectos/navigator-eventbus/.venv/bin/wikitoolkit claude-hook",
+            "timeout": 10
+          }
+        ]
+      }
     ]
+  },
+  "enabledPlugins": {
+    "fast-jev-compaction@fast-jev-compaction": true
+  },
+  "extraKnownMarketplaces": {
+    "fast-jev-compaction": {
+      "source": {
+        "source": "github",
+        "repo": "tamaratran/fast-jev-compaction"
+      }
+    }
   }
 }
