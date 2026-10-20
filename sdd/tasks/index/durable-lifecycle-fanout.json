@@ -41,7 +41,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [],
@@ -49,8 +49,9 @@
       "parallelism_notes": "No dependencies: edits only lifecycle/registry.py and a new test file; runs alongside TASK-4555 (outbox.py).",
       "assigned_to": null,
       "started_at": "2026-10-20T23:25:44+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4554-registry-bus-hook.md"
+      "completed_at": "2026-10-20T23:30:52+00:00",
+      "file": "sdd/tasks/completed/TASK-4554-registry-bus-hook.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4555",
@@ -59,7 +60,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [],
@@ -67,8 +68,9 @@
       "parallelism_notes": "No dependencies: creates outbox.py (stdlib sqlite3) and exports it from __init__.py; disjoint from TASK-4554's registry.py.",
       "assigned_to": null,
       "started_at": "2026-10-20T23:25:44+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4555-outbox-store.md"
+      "completed_at": "2026-10-20T23:30:52+00:00",
+      "file": "sdd/tasks/completed/TASK-4555-outbox-store.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4556",
