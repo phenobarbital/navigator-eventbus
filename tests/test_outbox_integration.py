@@ -1,4 +1,5 @@
 """FEAT-711 integration: outbox durability through Redis Streams (requires Redis)."""
+
 import asyncio
 import os
 from collections.abc import Awaitable, Callable

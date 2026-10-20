@@ -1,4 +1,5 @@
 """Unit tests for EventBus transport and outbox facade options."""
+
 import pytest
 
 from navigator_eventbus import EventBus, SqliteOutbox

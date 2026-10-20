@@ -4,6 +4,7 @@ Write-ahead store: an envelope is appended before the transport publish and
 deleted only after the backend confirms it. Stdlib ``sqlite3`` in WAL mode;
 every call runs off-loop through ``asyncio.to_thread``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -100,7 +101,8 @@ class SqliteOutbox:
                 self._counters["rejected"] += 1
                 self.logger.error(
                     "Outbox full (%d rows): rejecting envelope %s",
-                    self._pending, envelope.event_id,
+                    self._pending,
+                    envelope.event_id,
                 )
                 raise OutboxFullError(
                     f"Outbox at {self._path} is full ({self._max_rows} rows)"
@@ -113,7 +115,8 @@ class SqliteOutbox:
             self._counters["dropped"] += cur.rowcount
             self.logger.error(
                 "Outbox full (%d rows): dropped oldest row to admit %s",
-                self._max_rows, envelope.event_id,
+                self._max_rows,
+                envelope.event_id,
             )
         now = time.time()
         cur = conn.execute(
@@ -170,7 +173,8 @@ class SqliteOutbox:
                 self._pending -= d.rowcount
                 self._counters["expired"] += d.rowcount
                 self.logger.error(
-                    "Outbox row %s undecodable (%s); deleted", event_id,
+                    "Outbox row %s undecodable (%s); deleted",
+                    event_id,
                     type(exc).__name__,
                 )
         return result

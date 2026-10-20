@@ -63,6 +63,7 @@ logger = logging.getLogger("navigator_eventbus.lifecycle.registry")
 # Internal subscription record
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Subscription:
     """Internal record for a single event subscription.
@@ -91,6 +92,7 @@ class _Subscription:
 # ---------------------------------------------------------------------------
 # EventRegistry
 # ---------------------------------------------------------------------------
+
 
 class EventRegistry:
     """Typed lifecycle event dispatcher.
@@ -256,7 +258,9 @@ class EventRegistry:
         """
         for s in self._subscriptions:
             try:
-                if issubclass(event_type, s.event_type) or issubclass(s.event_type, event_type):
+                if issubclass(event_type, s.event_type) or issubclass(
+                    s.event_type, event_type
+                ):
                     return True
             except TypeError:
                 continue
@@ -309,9 +313,9 @@ class EventRegistry:
         """
         # Find matching subscriptions
         matching = [
-            s for s in self._subscriptions
-            if isinstance(event, s.event_type)
-            and (s.where is None or s.where(event))
+            s
+            for s in self._subscriptions
+            if isinstance(event, s.event_type) and (s.where is None or s.where(event))
         ]
 
         if not matching:
@@ -420,6 +424,7 @@ class EventRegistry:
             return
         try:
             from navigator_eventbus.lifecycle.global_registry import get_global_registry
+
             global_reg = get_global_registry()
             loop.create_task(
                 global_reg._emit_meta(err_evt),
@@ -498,6 +503,7 @@ class EventRegistry:
             return
         try:
             from navigator_eventbus.lifecycle.global_registry import get_global_registry
+
             global_reg = get_global_registry()
             if global_reg is self:
                 return  # don't re-emit to self

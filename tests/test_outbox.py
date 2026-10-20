@@ -1,4 +1,5 @@
 """Tests for the SqliteOutbox store (FEAT-711)."""
+
 import logging
 import time
 from datetime import timedelta

@@ -1,4 +1,5 @@
 """Tests for BusCore publish-only mode (FEAT-711)."""
+
 import asyncio
 
 from navigator_eventbus import EventEnvelope, SqliteOutbox

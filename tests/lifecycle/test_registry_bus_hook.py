@@ -105,7 +105,9 @@ async def test_subscription_serializer_overrides_registry() -> None:
     assert bus.calls[0][1] == {"serializer": "subscription"}
 
 
-async def test_serializer_exception_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
+async def test_serializer_exception_logged_not_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     def raising_serializer(event: LifecycleEvent) -> dict:
         del event
         raise ValueError("serializer failed")

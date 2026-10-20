@@ -1,4 +1,5 @@
 """Durable outbox behavior for :class:`navigator_eventbus.core.BusCore`."""
+
 import asyncio
 import time
 from collections.abc import Callable

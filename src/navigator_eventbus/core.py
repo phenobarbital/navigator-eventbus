@@ -21,6 +21,7 @@ with:
   emitter; they surface as ``bus.subscriber_error`` meta-events guarded
   against recursion by a ``contextvars.ContextVar``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -197,8 +198,7 @@ class BusCore:
             EventPriority, key=lambda p: p.value, reverse=True
         )
         self._queues: dict[EventPriority, asyncio.Queue[EventEnvelope]] = {
-            prio: asyncio.Queue(maxsize=queue_size)
-            for prio in self._priority_order
+            prio: asyncio.Queue(maxsize=queue_size) for prio in self._priority_order
         }
         # Counts enqueued items; workers block here when idle. Workers are
         # spurious-wakeup tolerant (drop_oldest can skew the count by design).
@@ -240,9 +240,7 @@ class BusCore:
         self._started = True
         self._closing = False
         self._stopping = False
-        self._runner = asyncio.create_task(
-            self._run_workers(), name="bus-core-workers"
-        )
+        self._runner = asyncio.create_task(self._run_workers(), name="bus-core-workers")
         if self._backend is not None and not self._publish_only:
             await self._backend.start_consumer(self._on_transport_envelope)
         elif self._backend is not None:
@@ -272,7 +270,9 @@ class BusCore:
             self.logger.error(
                 "BusCore drain deadline (%.1fs) exceeded; %d envelopes "
                 "abandoned (dropped_on_close=%d)",
-                deadline, pending, self.dropped_on_close,
+                deadline,
+                pending,
+                self.dropped_on_close,
             )
             # Best-effort observability signal — may itself go undispatched
             # (workers are being torn down), but monitoring backends that
@@ -314,10 +314,7 @@ class BusCore:
 
     async def _drain(self) -> None:
         """Wait until all queues are empty and no dispatch is in flight."""
-        while (
-            any(not q.empty() for q in self._queues.values())
-            or self._in_flight > 0
-        ):
+        while any(not q.empty() for q in self._queues.values()) or self._in_flight > 0:
             await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
@@ -337,9 +334,7 @@ class BusCore:
             OutboxFullError: If the durable outbox rejects the envelope.
         """
         if self._closing:
-            raise BusClosedError(
-                "BusCore is closing — publish() rejected"
-            )
+            raise BusClosedError("BusCore is closing — publish() rejected")
         # Fan out to the transport backend BEFORE the (possibly blocking)
         # local enqueue — fire-and-forget, never delays local dispatch.
         if self._backend is not None:
@@ -385,7 +380,8 @@ class BusCore:
                     dropped = queue.get_nowait()
                     self.logger.warning(
                         "Backpressure drop_oldest: dropped %s (%s)",
-                        dropped.topic, dropped.event_id,
+                        dropped.topic,
+                        dropped.event_id,
                     )
                 except asyncio.QueueEmpty:  # drained meanwhile
                     pass
@@ -413,7 +409,9 @@ class BusCore:
             self.logger.warning(
                 "Transport backend publish failed for %s (%s): %s — "
                 "local dispatch unaffected",
-                envelope.topic, envelope.event_id, exc,
+                envelope.topic,
+                envelope.event_id,
+                exc,
             )
             await self._outbox_nack(envelope, exc)
         else:
@@ -444,9 +442,7 @@ class BusCore:
             self._outbox_attempts.pop(envelope.event_id, None)
             self._stats["outbox_acked"] += 1
 
-    async def _outbox_nack(
-        self, envelope: EventEnvelope, exc: BaseException
-    ) -> None:
+    async def _outbox_nack(self, envelope: EventEnvelope, exc: BaseException) -> None:
         """Schedule a tracked envelope for retry, isolating outbox failures."""
         if self._outbox is None or envelope.event_id not in self._outbox_inflight:
             return
@@ -518,9 +514,7 @@ class BusCore:
         ]
         if publish_tasks:
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*publish_tasks), timeout=deadline
-                )
+                await asyncio.wait_for(asyncio.gather(*publish_tasks), timeout=deadline)
             except (asyncio.TimeoutError, TimeoutError):
                 self.logger.exception("Timed out waiting for backend publishes")
             except Exception:  # noqa: BLE001 — publish failures are isolated
@@ -706,7 +700,8 @@ class BusCore:
                 except Exception:  # noqa: BLE001 — filter errors are isolated
                     self.logger.exception(
                         "filter_fn raised for subscriber %s on %s",
-                        sub.subscriber_id, envelope.topic,
+                        sub.subscriber_id,
+                        envelope.topic,
                     )
                     continue
                 await self._invoke_with_retry(sub, envelope)
@@ -748,13 +743,14 @@ class BusCore:
                 last_exc = exc
                 self.logger.warning(
                     "Handler %s failed on %s (attempt %d/%d): %s",
-                    sub.subscriber_id, envelope.topic,
-                    attempt, self._retry_attempts, exc,
+                    sub.subscriber_id,
+                    envelope.topic,
+                    attempt,
+                    self._retry_attempts,
+                    exc,
                 )
                 if attempt < self._retry_attempts:
-                    await asyncio.sleep(
-                        self._retry_base_delay * (2 ** (attempt - 1))
-                    )
+                    await asyncio.sleep(self._retry_base_delay * (2 ** (attempt - 1)))
         # Retries exhausted.
         assert last_exc is not None
         self._emit_subscriber_error(envelope, sub, last_exc)
@@ -785,7 +781,8 @@ class BusCore:
         except Exception:  # noqa: BLE001 — DLQ failures are isolated too
             self.logger.exception(
                 "DLQ callback failed for %s (%s)",
-                envelope.topic, envelope.event_id,
+                envelope.topic,
+                envelope.event_id,
             )
 
     # ------------------------------------------------------------------
@@ -802,7 +799,8 @@ class BusCore:
         if _in_meta_dispatch.get():
             self.logger.error(
                 "Recursion guard triggered: dropping nested "
-                "bus.subscriber_error for %s", envelope.topic,
+                "bus.subscriber_error for %s",
+                envelope.topic,
             )
             return
         self._publish_meta(
@@ -818,9 +816,7 @@ class BusCore:
             },
         )
 
-    def _emit_backpressure_meta(
-        self, envelope: EventEnvelope, policy: str
-    ) -> None:
+    def _emit_backpressure_meta(self, envelope: EventEnvelope, policy: str) -> None:
         """Enqueue a ``bus.backpressure`` meta-event (best-effort)."""
         if _in_meta_dispatch.get():
             return

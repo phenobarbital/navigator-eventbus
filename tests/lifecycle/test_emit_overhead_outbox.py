@@ -1,4 +1,5 @@
 """FEAT-711 AC-7: the FEAT-177 emit-overhead budget still holds with the outbox enabled."""
+
 import asyncio
 import time
 from dataclasses import dataclass

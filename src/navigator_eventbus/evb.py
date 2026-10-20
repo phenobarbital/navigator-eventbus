@@ -28,6 +28,7 @@ New ADDITIVE-ONLY kwargs: ``severity=`` on ``publish``/``emit`` and
 - ``BUS_DRAIN_TIMEOUT`` (default 5.0 s)
 - ``BUS_CHANNEL_PREFIX`` (default ``evb:events:`` — FEAT-312 neutral knob)
 """
+
 import asyncio
 import os
 import uuid
@@ -53,6 +54,7 @@ DEFAULT_CHANNEL_PREFIX = "evb:events:"
 
 class EventPriority(Enum):
     """Priority levels for events in the event bus."""
+
     LOW = 0
     NORMAL = 5
     HIGH = 10
@@ -62,15 +64,14 @@ class EventPriority(Enum):
 @dataclass
 class Event:
     """Represents an event on the bus."""
-    event_type: str                              # "order.created", "agent.completed"
+
+    event_type: str  # "order.created", "agent.completed"
     payload: Dict[str, Any]
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-    source: Optional[str] = None                 # Who emitted the event
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    source: Optional[str] = None  # Who emitted the event
     priority: EventPriority = EventPriority.NORMAL
-    correlation_id: Optional[str] = None         # Chain-tracking id
+    correlation_id: Optional[str] = None  # Chain-tracking id
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -82,7 +83,7 @@ class Event:
             "source": self.source,
             "priority": self.priority.value,
             "correlation_id": self.correlation_id,
-            "metadata": self.metadata
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -99,17 +100,18 @@ class Event:
             source=data.get("source"),
             priority=EventPriority(data.get("priority", 5)),
             correlation_id=data.get("correlation_id"),
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
         )
 
 
 @dataclass
 class EventSubscription:
     """Subscription to an event pattern."""
-    pattern: str                                 # "order.*", "agent.completed"
+
+    pattern: str  # "order.*", "agent.completed"
     handler: Callable[[Event], Any]
     subscriber_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    priority: int = 0                            # Execution order
+    priority: int = 0  # Execution order
     filter_fn: Optional[Callable[[Event], bool]] = None
     async_handler: bool = True
 
@@ -120,6 +122,7 @@ def _bus_config() -> Dict[str, Any]:
     Returns:
         BusCore constructor kwargs with documented defaults.
     """
+
     def _get(key: str, fallback: Any, cast: Callable[[Any], Any]) -> Any:
         value = nav_config.get(key, fallback=fallback)
         try:
@@ -251,7 +254,9 @@ class EventBus:
         if transport in ("pubsub", "streams") and self.redis_url is None:
             raise ValueError(f"transport={transport!r} requires redis_url")
         if transport == "pubsub":
-            return RedisPubSubBackend(self.redis_url, channel_prefix=self.channel_prefix)
+            return RedisPubSubBackend(
+                self.redis_url, channel_prefix=self.channel_prefix
+            )
         if transport == "streams":
             from navigator_eventbus.backends.redis_streams import RedisStreamsBackend
 
@@ -271,8 +276,12 @@ class EventBus:
         if outbox is None:
             return None
         if isinstance(outbox, (str, os.PathLike)):
-            max_rows = int(nav_config.get("BUS_OUTBOX_MAX_ROWS", fallback=None) or 1_000_000)
-            overflow = nav_config.get("BUS_OUTBOX_OVERFLOW", fallback=None) or "reject_new"
+            max_rows = int(
+                nav_config.get("BUS_OUTBOX_MAX_ROWS", fallback=None) or 1_000_000
+            )
+            overflow = (
+                nav_config.get("BUS_OUTBOX_OVERFLOW", fallback=None) or "reject_new"
+            )
             return SqliteOutbox(outbox, max_rows=max_rows, overflow=overflow)
         return outbox
 
@@ -307,6 +316,7 @@ class EventBus:
         """Auto-start BusCore so legacy call sites need no changes."""
         if self._closed:
             from navigator_eventbus.core import BusClosedError
+
             raise BusClosedError("EventBus is closed")
         if not self._started:
             self._started = True
@@ -354,14 +364,19 @@ class EventBus:
         """
         wrapped_filter: Optional[Callable[["EventEnvelope"], bool]] = None
         if filter_fn is not None:
+
             def _filter(envelope: "EventEnvelope") -> bool:
                 return bool(filter_fn(_envelope_to_event(envelope)))
+
             wrapped_filter = _filter
 
         if asyncio.iscoroutinefunction(handler):
+
             async def wrapped_handler(envelope: "EventEnvelope") -> None:
                 await handler(_envelope_to_event(envelope))
+
         else:
+
             def wrapped_handler(envelope: "EventEnvelope") -> None:  # type: ignore[misc]
                 handler(_envelope_to_event(envelope))
 
@@ -415,18 +430,14 @@ class EventBus:
 
         self.logger.debug(
             "Published event %s, %d subscribers matched",
-            event.event_type, matches,
+            event.event_type,
+            matches,
         )
         return matches
 
     # === Convenience methods ===
 
-    async def emit(
-        self,
-        event_type: str,
-        payload: Dict[str, Any],
-        **kwargs
-    ) -> int:
+    async def emit(self, event_type: str, payload: Dict[str, Any], **kwargs) -> int:
         """Shortcut to publish events.
 
         Accepts every legacy ``Event`` kwarg (``source=``, ``priority=``,
@@ -434,18 +445,16 @@ class EventBus:
         ``severity=`` kwarg (FEAT-310).
         """
         severity = kwargs.pop("severity", None)
-        event = Event(
-            event_type=event_type,
-            payload=payload,
-            **kwargs
-        )
+        event = Event(event_type=event_type, payload=payload, **kwargs)
         return await self.publish(event, severity=severity)
 
     def on(self, pattern: str, **kwargs):
         """Decorator to subscribe to events."""
+
         def decorator(fn):
             self.subscribe(pattern, fn, **kwargs)
             return fn
+
         return decorator
 
 
