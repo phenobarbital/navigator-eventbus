@@ -346,10 +346,8 @@ See the blueprint test file. It covers spec §4 rows `test_exchange_not_clobbere
 
 ## Completion Note
 
-*(Agent fills this in when done)*
-
-**Completed by**:
-**Date**:
-**Notes**:
+**Completed by**: sonnet (native)
+**Date**: 2026-10-21
+**Notes**: Merged. D1 exchange fix, single wrap, consumer tags. Same PYTHONPATH caveat as TASK-4561; 2 pre-existing navconfig-env test failures unrelated (fail on baseline).
 
 **Deviations from spec**: none
