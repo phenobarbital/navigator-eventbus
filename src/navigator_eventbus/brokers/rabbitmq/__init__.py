@@ -3,8 +3,8 @@ from .bridge import EmployeeEventsBridge
 from .connection import RabbitMQConnection
 from .consumer import RMQConsumer
 from .downlink import MQTTDownlinkPublisher
-from .producer import RMQProducer
 from .manager import RMQManager
+from .producer import RMQProducer
 
 __all__ = [
     "RabbitMQConnection",
