@@ -14,7 +14,7 @@ base_branch: main
 **Date**: 2026-08-06
 **Author**: Jesus Lara
 **Status**: approved
-**Target version**: 0.4.0 — next minor after the current 0.3.0 (bump `src/navigator_eventbus/version.py`)
+**Target version**: next minor after the current `version.py` — 0.4.0, or 0.5.0 if FEAT-711's 0.4.0 release (TASK-4560) lands first (bump `src/navigator_eventbus/version.py`)
 
 > **Downstream driver**: this feature unblocks the `nav-rewards` migration
 > (`nav-rewards@sdd/specs/eventbus-migration.spec.md`, FEAT-002), which cannot
@@ -362,15 +362,20 @@ class RabbitMQConnection(BaseConnection):
 | `test_exchange_binding_roundtrip` | Queue name ≠ exchange name; message published to the exchange reaches the consumer — end-to-end regression for D1 |
 
 ### Validation Contract
-- `tests/brokers/test_producer.py`
-- `tests/brokers/test_consumer_fixes.py`
-- `tests/brokers/test_rabbitmq_settlement.py`
-- `tests/brokers/test_manager.py`
-- `tests/brokers/test_rmq_manager.py`
-- `tests/brokers/test_redis_manager.py`
-- `tests/brokers/test_sqs_manager.py`
-- `tests/brokers/test_rabbitmq.py`
-- `tests/brokers/test_hook_rewire.py`
+tests:
+- tests/brokers/test_producer.py
+- tests/brokers/test_consumer_fixes.py
+- tests/brokers/test_rabbitmq_settlement.py
+- tests/brokers/test_manager.py
+- tests/brokers/test_rmq_manager.py
+- tests/brokers/test_redis_manager.py
+- tests/brokers/test_sqs_manager.py
+- tests/brokers/test_rabbitmq.py
+- tests/brokers/test_hook_rewire.py
+- tests/brokers/test_sqs.py
+- tests/brokers/test_redis_consumer.py
+- tests/brokers/test_manager_integration.py
+markers: none
 
 ### Test Data / Fixtures
 
@@ -611,4 +616,4 @@ No new runtime dependencies. Existing optional extras (`rabbitmq` → `aiormq`,
 |---|---|---|---|
 | 0.1 | 2026-08-06 | Jesus Lara | Initial draft. Derived from the `nav-rewards` migration proposal (`nav-rewards@sdd/proposals/eventbus-migration.md`, Plan A) and from an MRO/init-chain audit of the `brokers` subpackage |
 | 0.2 | 2026-10-21 | Codex | Specify consumer teardown, single-owner hook settlement, and preservation of the Redis manager registration key, with regression tests and acceptance criteria |
-| 0.3 | 2026-10-21 | Jesus Lara | Approved. Q2 resolved (all three managers ship); target version set to 0.4.0 (`version.py` is already 0.3.0); §4 Validation Contract added |
+| 0.3 | 2026-10-21 | Jesus Lara | Approved. Q2 resolved (all three managers ship); target version = next minor after current `version.py` (0.3.0; FEAT-711 also targets 0.4.0); §4 Validation Contract added |
