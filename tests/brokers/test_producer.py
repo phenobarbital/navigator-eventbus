@@ -1,4 +1,5 @@
 """Unit tests for navigator_eventbus.brokers.producer (TASK-1814, FEAT-316)."""
+
 import time
 
 import pytest
@@ -10,20 +11,15 @@ from navigator_eventbus.brokers.producer import BrokerProducer
 class DummyProducer(BrokerProducer):
     _name_ = "dummy_producer"
 
-    async def connect(self):
-        ...
+    async def connect(self): ...
 
-    async def disconnect(self):
-        ...
+    async def disconnect(self): ...
 
-    async def publish_message(self, body, queue_name=None, **kwargs):
-        ...
+    async def publish_message(self, body, queue_name=None, **kwargs): ...
 
-    async def consume_messages(self, queue_name, callback, **kwargs):
-        ...
+    async def consume_messages(self, queue_name, callback, **kwargs): ...
 
-    async def process_message(self, body, properties=None):
-        ...
+    async def process_message(self, body, properties=None): ...
 
 
 @pytest.fixture
@@ -50,8 +46,7 @@ async def test_broker_producer_auth_callable(auth_callable):
     async def protected(self, request):
         return web.json_response({"ok": True})
 
-    class FakeRequest:
-        ...
+    class FakeRequest: ...
 
     response = await protected(p, FakeRequest())
     assert response.status == 200
@@ -65,8 +60,7 @@ async def test_broker_producer_no_auth_raises_401():
     async def protected(self, request):
         return web.json_response({"ok": True})
 
-    class FakeRequest:
-        ...
+    class FakeRequest: ...
 
     with pytest.raises(web.HTTPUnauthorized):
         await protected(p, FakeRequest())
@@ -74,7 +68,11 @@ async def test_broker_producer_no_auth_raises_401():
 
 def _post_paths(app: web.Application) -> set[str]:
     """Return the canonical paths of all POST routes on *app*."""
-    return {route.resource.canonical for route in app.router.routes() if route.method == "POST"}
+    return {
+        route.resource.canonical
+        for route in app.router.routes()
+        if route.method == "POST"
+    }
 
 
 def test_endpoint_path_default():

@@ -13,6 +13,7 @@ Applies three desacoples plus PR navigator#393 fix #3:
 - **navigator.conf desacople**: ``BROKER_MANAGER_QUEUE_SIZE`` is read from
   the local :mod:`navigator_eventbus.brokers._conf` module.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -99,7 +100,10 @@ class BrokerProducer(BaseConnection, ABC):
         self.app.on_shutdown.append(self.stop)
         self.app[self._name_] = self
         # Generic Event Subscription (path configurable — FEAT-431 Module 1):
-        path = self._endpoint_path or f"/api/v1/broker/{self._broker_service}/publish_event"
+        path = (
+            self._endpoint_path
+            or f"/api/v1/broker/{self._broker_service}/publish_event"
+        )
         self.app.router.add_post(path, self.event_publisher)
         self.logger.notice(":: Starting Message Queue Producer ::")  # type: ignore[attr-defined]
 
@@ -190,7 +194,7 @@ class BrokerProducer(BaseConnection, ABC):
 
     @staticmethod
     def service_auth(
-        fn: Callable[..., Awaitable[Any]]
+        fn: Callable[..., Awaitable[Any]],
     ) -> Callable[..., Awaitable[Any]]:
         """Decorate an endpoint to require an injected ``auth_callable``.
 

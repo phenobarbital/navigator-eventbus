@@ -1,4 +1,5 @@
 """Tests for FEAT-431 Modules 2 and 5: RMQ/SQS consumer fixes (TASK-4562)."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -17,10 +18,20 @@ DSN = "amqp://guest:guest@localhost:5672/navigator"
 def mock_amqp_channel():
     """aiormq channel double (spec §4 fixture)."""
     ch = MagicMock()
-    for name in ("exchange_declare", "queue_declare", "queue_bind", "basic_publish",
-                 "basic_qos", "basic_ack", "basic_nack", "basic_cancel"):
+    for name in (
+        "exchange_declare",
+        "queue_declare",
+        "queue_bind",
+        "basic_publish",
+        "basic_qos",
+        "basic_ack",
+        "basic_nack",
+        "basic_cancel",
+    ):
         setattr(ch, name, AsyncMock())
-    ch.basic_consume = AsyncMock(return_value=aiormq.spec.Basic.ConsumeOk(consumer_tag="ctag-1"))
+    ch.basic_consume = AsyncMock(
+        return_value=aiormq.spec.Basic.ConsumeOk(consumer_tag="ctag-1")
+    )
     return ch
 
 
@@ -34,12 +45,18 @@ def _wire(consumer: RMQConsumer, channel) -> RMQConsumer:
 def _delivered(body: bytes = b"hello", tag: int = 7):
     """Minimal DeliveredMessage double accepted by RabbitMQConnection.wrap_callback."""
     props = aiormq.spec.Basic.Properties(content_type="text/plain", headers={})
-    return SimpleNamespace(body=body, delivery_tag=tag, header=SimpleNamespace(properties=props),
-                           delivery=SimpleNamespace(exchange="navigator", routing_key="#"))
+    return SimpleNamespace(
+        body=body,
+        delivery_tag=tag,
+        header=SimpleNamespace(properties=props),
+        delivery=SimpleNamespace(exchange="navigator", routing_key="#"),
+    )
 
 
 def test_exchange_not_clobbered():
-    c = RMQConsumer(credentials=DSN, exchange_name="navigator", queue_name="processing_queue")
+    c = RMQConsumer(
+        credentials=DSN, exchange_name="navigator", queue_name="processing_queue"
+    )
     assert c._exchange_name == "navigator"
     assert c._queue_name == "processing_queue"
 
@@ -63,7 +80,9 @@ async def test_event_subscribe_single_wrap(mock_amqp_channel):
         received.append((message, body))
 
     await c.event_subscribe("processing_queue", cb)
-    consumer_callback = mock_amqp_channel.basic_consume.call_args.kwargs["consumer_callback"]
+    consumer_callback = mock_amqp_channel.basic_consume.call_args.kwargs[
+        "consumer_callback"
+    ]
     msg = _delivered()
     await consumer_callback(msg)
     assert received == [(msg, "hello")]
@@ -86,8 +105,7 @@ async def test_sqs_event_subscribe_single_wrap(monkeypatch):
     consume = AsyncMock()
     monkeypatch.setattr(c, "consume_messages", consume)
 
-    async def cb(message, body):
-        ...
+    async def cb(message, body): ...
 
     await c.event_subscribe("q", cb)
     assert consume.call_args.kwargs["callback"] is cb

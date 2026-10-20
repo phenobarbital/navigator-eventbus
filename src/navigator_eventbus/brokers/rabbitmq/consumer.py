@@ -4,6 +4,7 @@ Ported near-verbatim; the real class name is ``RMQConsumer`` (the spec's
 component diagram refers to it loosely as "RabbitMQConsumer", but the public
 API name is preserved as-is — no public API break).
 """
+
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Optional, Union
@@ -77,9 +78,7 @@ class RMQConsumer(RabbitMQConnection, BrokerConsumer):
         callback: Union[Callable, Awaitable],
     ) -> None:
         """Subscribe to a queue and consume messages via *callback*."""
-        await self.consume_messages(
-            queue_name=queue_name, callback=callback
-        )
+        await self.consume_messages(queue_name=queue_name, callback=callback)
 
     async def subscribe_to_events(
         self,
