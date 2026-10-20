@@ -7,6 +7,7 @@ Concrete managers combine it with a backend consumer, e.g.
 load-bearing: ``BrokerProducer`` first, ``BrokerConsumer`` last in the MRO
 (``BrokerConsumer.__init__`` terminates the cooperative ``__init__`` chain).
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

@@ -1,4 +1,5 @@
 """Generic BrokerManager lifecycle tests (FEAT-431 Module 3, TASK-4564)."""
+
 from __future__ import annotations
 
 import pytest
@@ -23,11 +24,9 @@ class DummyManager(BrokerManager):
     async def publish_message(self, body, queue_name=None, **kwargs):
         self.calls.append("publish")
 
-    async def consume_messages(self, queue_name, callback, **kwargs):
-        ...
+    async def consume_messages(self, queue_name, callback, **kwargs): ...
 
-    async def process_message(self, body, properties=None):
-        ...
+    async def process_message(self, body, properties=None): ...
 
     async def _subscribe(self, app):
         self.calls.append("subscribe")

@@ -8,6 +8,7 @@ Desacoples: the DSN is built locally from navconfig
 ValidationError`` handling is replaced with a generic ``Exception`` catch
 that logs a warning.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -206,7 +207,9 @@ class RabbitMQConnection(BaseConnection):
             requeue: Whether the broker should requeue the message.
         """
         await self._channel.basic_nack(message.delivery_tag, requeue=requeue)
-        self.logger.debug(f"Message rejected: {message.delivery_tag} (requeue={requeue})")
+        self.logger.debug(
+            f"Message rejected: {message.delivery_tag} (requeue={requeue})"
+        )
 
     async def publish_message(
         self,
@@ -295,9 +298,7 @@ class RabbitMQConnection(BaseConnection):
 
         async def wrapped_callback(message: "aiormq.abc.DeliveredMessage") -> None:
             try:
-                properties = (
-                    message.header.properties or aiormq.spec.Basic.Properties()
-                )
+                properties = message.header.properties or aiormq.spec.Basic.Properties()
                 body = await self.process_message(message.body, properties)
                 if asyncio.iscoroutinefunction(callback):
                     await callback(message, body)
@@ -309,15 +310,15 @@ class RabbitMQConnection(BaseConnection):
             except RejectDelivery as reject:
                 # The callback asked for a non-requeued rejection: settle once
                 # and return — no ack, no retry/republish (FEAT-431 Module 4).
-                self.logger.warning(f"Message {message.delivery_tag} rejected: {reject}")
+                self.logger.warning(
+                    f"Message {message.delivery_tag} rejected: {reject}"
+                )
                 await self.reject_message(message, requeue=False)
                 return
             except Exception as e:
                 self.logger.warning(f"Error processing message: {e}")
                 # Get retry count from message properties headers
-                properties = (
-                    message.header.properties or aiormq.spec.Basic.Properties()
-                )
+                properties = message.header.properties or aiormq.spec.Basic.Properties()
                 headers = dict(properties.headers or {})
                 retry_count = headers.get("x-retry", 0)
                 if isinstance(retry_count, bytes):

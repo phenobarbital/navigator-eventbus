@@ -1,4 +1,5 @@
 """Tests for FEAT-431 Module 4: ensure_queue / reject_message / hook settlement (TASK-4563)."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -96,6 +97,7 @@ async def test_reject_message_nack(conn, mock_amqp_channel, requeue):
 
 async def test_rabbitmq_hook_connect(monkeypatch, mock_amqp_channel):
     """connect() completes after declaring and binding the configured queue."""
+
     async def fake_connect(self):
         self._connection = SimpleNamespace(is_closed=False)
         self._channel = mock_amqp_channel
@@ -120,7 +122,9 @@ async def test_rabbitmq_hook_connect(monkeypatch, mock_amqp_channel):
 async def test_rabbitmq_hook_failure_settles_once(conn, mock_amqp_channel, monkeypatch):
     """A failed hook callback nacks once without acknowledgement or republish."""
     hook = _hook(conn)
-    monkeypatch.setattr(hook, "_on_message", AsyncMock(side_effect=RuntimeError("boom")))
+    monkeypatch.setattr(
+        hook, "_on_message", AsyncMock(side_effect=RuntimeError("boom"))
+    )
 
     wrapped = conn.wrap_callback(hook._consumer_callback, requeue_on_fail=True)
     await wrapped(_delivered())
@@ -144,6 +148,7 @@ async def test_rabbitmq_hook_success_settles_once(conn, mock_amqp_channel, monke
 
 async def test_rabbitmq_callback_retry_preserved(conn, mock_amqp_channel):
     """Ordinary callback exceptions still nack and republish with one retry."""
+
     async def failing(message, body):
         raise ValueError("ordinary failure")
 

@@ -11,6 +11,7 @@ optional dependencies installed (``aiormq``, ``aioboto3``, ...) — import the
 subpackages directly, e.g. ``from navigator_eventbus.brokers.redis import
 RedisConnection``.
 """
+
 from .connection import BaseConnection
 from .consumer import BrokerConsumer
 from .manager import BrokerManager
