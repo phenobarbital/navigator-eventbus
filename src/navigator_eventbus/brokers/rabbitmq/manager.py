@@ -5,6 +5,7 @@ Combines :class:`~navigator_eventbus.brokers.manager.BrokerManager` with
 AMQP connection/channel comes from the MRO. Shutdown cancels every consumer
 tag and lets in-flight deliveries finish before the outgoing queue drains.
 """
+
 from __future__ import annotations
 
 import asyncio

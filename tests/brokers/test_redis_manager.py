@@ -1,4 +1,5 @@
 """RedisManager unit tests (FEAT-431 Module 3, TASK-4566)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -47,8 +48,15 @@ def patched(monkeypatch):
 
 
 def test_manager_mro_redis():
-    assert RedisManager.__mro__[:7] == (RedisManager, BrokerManager, BrokerProducer, RedisConsumer,
-                                        RedisConnection, BaseConnection, BrokerConsumer)
+    assert RedisManager.__mro__[:7] == (
+        RedisManager,
+        BrokerManager,
+        BrokerProducer,
+        RedisConsumer,
+        RedisConnection,
+        BaseConnection,
+        BrokerConsumer,
+    )
 
 
 def test_redis_manager_registration_key():

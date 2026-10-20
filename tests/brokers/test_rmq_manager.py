@@ -1,4 +1,5 @@
 """RMQManager tests (FEAT-431 Module 3, TASK-4565)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +12,11 @@ from aiohttp import web
 
 from navigator_eventbus.brokers import BaseConnection, BrokerConsumer, BrokerProducer
 from navigator_eventbus.brokers.manager import BrokerManager
-from navigator_eventbus.brokers.rabbitmq import RabbitMQConnection, RMQConsumer, RMQManager
+from navigator_eventbus.brokers.rabbitmq import (
+    RabbitMQConnection,
+    RMQConsumer,
+    RMQManager,
+)
 
 
 @pytest.fixture
@@ -192,6 +197,7 @@ def test_rmq_manager_setup_registers_name(manager_kwargs):
 
     assert "rabbitmq_manager" in app
     assert any(
-        route.method == "POST" and route.resource.canonical == "/api/v1/broker/rabbitmq/publish_event"
+        route.method == "POST"
+        and route.resource.canonical == "/api/v1/broker/rabbitmq/publish_event"
         for route in app.router.routes()
     )

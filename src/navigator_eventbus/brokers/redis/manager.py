@@ -1,4 +1,5 @@
 """RedisManager — Redis Streams producer + consumer over one connection (FEAT-431 Module 3)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -36,7 +37,9 @@ class RedisManager(BrokerManager, RedisConsumer):
 
     async def _subscribe(self, app: web.Application) -> None:
         """Subscribe to the configured stream with the configured callback."""
-        await self.subscribe_to_events(queue_name=self._queue_name, callback=self._callback_)
+        await self.subscribe_to_events(
+            queue_name=self._queue_name, callback=self._callback_
+        )
 
     async def _stop_consuming(self) -> None:
         """Cancel and await every consumer task; tolerate none."""
