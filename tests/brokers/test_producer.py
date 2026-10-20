@@ -1,4 +1,6 @@
 """Unit tests for navigator_eventbus.brokers.producer (TASK-1814, FEAT-316)."""
+import time
+
 import pytest
 from aiohttp import web
 
@@ -68,3 +70,33 @@ async def test_broker_producer_no_auth_raises_401():
 
     with pytest.raises(web.HTTPUnauthorized):
         await protected(p, FakeRequest())
+
+
+def _post_paths(app: web.Application) -> set[str]:
+    """Return the canonical paths of all POST routes on *app*."""
+    return {route.resource.canonical for route in app.router.routes() if route.method == "POST"}
+
+
+def test_endpoint_path_default():
+    """Without the kwarg, the historical route is registered (FEAT-431 M1)."""
+    app = web.Application()
+    DummyProducer().setup(app)
+    assert "/api/v1/broker/rabbitmq/publish_event" in _post_paths(app)
+
+
+def test_endpoint_path_custom():
+    """A custom path is registered and the default is not."""
+    app = web.Application()
+    DummyProducer(endpoint_path="/api/v1/rewards/events").setup(app)
+    paths = _post_paths(app)
+    assert "/api/v1/rewards/events" in paths
+    assert "/api/v1/broker/rabbitmq/publish_event" not in paths
+
+
+async def test_queue_event_no_sleep():
+    """queue_event() returns without the 100 ms delay (FEAT-431 M6)."""
+    producer = DummyProducer()
+    start = time.perf_counter()
+    await producer.queue_event({"a": 1}, "navigator", "x.y")
+    assert time.perf_counter() - start < 0.05
+    assert producer.event_queue.qsize() == 1
