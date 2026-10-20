@@ -2,5 +2,6 @@
 from .connection import RedisConnection
 from .consumer import RedisConsumer
 from .producer import RedisProducer
+from .manager import RedisManager
 
-__all__ = ["RedisConnection", "RedisConsumer", "RedisProducer"]
+__all__ = ["RedisConnection", "RedisConsumer", "RedisProducer", "RedisManager"]
