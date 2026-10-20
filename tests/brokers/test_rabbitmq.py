@@ -1,4 +1,5 @@
 """Unit tests for navigator_eventbus.brokers.rabbitmq (TASK-1816, FEAT-316)."""
+
 import inspect
 import os
 

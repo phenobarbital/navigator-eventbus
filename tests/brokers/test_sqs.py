@@ -1,4 +1,5 @@
 """Unit tests for navigator_eventbus.brokers.sqs (TASK-1817, FEAT-316)."""
+
 import inspect
 import os
 
@@ -24,7 +25,11 @@ def test_sqs_connection_creds_navconfig(monkeypatch):
 
 
 def test_sqs_connection_explicit_credentials():
-    creds = {"aws_access_key_id": "explicit", "aws_secret_access_key": "x", "region_name": "eu-west-1"}
+    creds = {
+        "aws_access_key_id": "explicit",
+        "aws_secret_access_key": "x",
+        "region_name": "eu-west-1",
+    }
     conn = SQSConnection(credentials=creds)
     assert conn._credentials == creds
 
