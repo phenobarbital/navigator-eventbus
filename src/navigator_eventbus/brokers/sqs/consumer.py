@@ -58,7 +58,7 @@ class SQSConsumer(SQSConnection, BrokerConsumer):
     ) -> None:
         """Subscribe to a queue and consume messages via *callback*."""
         await self.consume_messages(
-            queue_name=queue_name, callback=self.wrap_callback(callback)
+            queue_name=queue_name, callback=callback
         )
 
     async def subscribe_to_events(
