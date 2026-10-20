@@ -166,7 +166,7 @@
       "feature_id": "FEAT-431",
       "feature": "brokers-unified-manager",
       "spec": "sdd/specs/brokers-unified-manager.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "medium",
       "effort": "S",
       "depends_on": [
@@ -176,8 +176,9 @@
       "parallelism_notes": "Imports BrokerManager from TASK-4564 (brokers/manager.py); parallel with TASK-4565/4566 (disjoint sqs/ files).",
       "assigned_to": null,
       "started_at": "2026-10-20T23:28:46+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4567-sqs-manager.md"
+      "completed_at": "2026-10-20T23:42:10+00:00",
+      "file": "sdd/tasks/completed/TASK-4567-sqs-manager.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4568",
