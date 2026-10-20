@@ -385,10 +385,13 @@ class RabbitMQConnection(BaseConnection):
             await self._channel.basic_qos(prefetch_count=prefetch_count)
 
             # Start consuming messages from the queue
-            await self._channel.basic_consume(
+            consumer_tag = await self._channel.basic_consume(
                 queue=queue_name,
                 consumer_callback=self.wrap_callback(callback),
             )
+            tags = getattr(self, "_consumer_tags", None)
+            if isinstance(tags, list) and getattr(consumer_tag, "consumer_tag", None):
+                tags.append(consumer_tag.consumer_tag)
             self.logger.info(f"Started consuming messages from queue '{queue_name}'.")
         except Exception as e:
             self.logger.error(f"Error consuming messages: {e}")

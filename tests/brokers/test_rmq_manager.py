@@ -201,3 +201,18 @@ def test_rmq_manager_setup_registers_name(manager_kwargs):
         and route.resource.canonical == "/api/v1/broker/rabbitmq/publish_event"
         for route in app.router.routes()
     )
+
+
+async def test_event_subscribe_consumer_cancelled_on_stop(
+    manager_kwargs, patched, channel
+):
+    """Manual ``event_subscribe`` consumers are cancelled on shutdown."""
+    manager = RMQManager(auto_subscribe=False, callback=AsyncMock(), **manager_kwargs)
+    await manager.start(web.Application())
+
+    await manager.event_subscribe("manual_queue", AsyncMock())
+    assert manager._consumer_tags == ["ctag-1"]
+
+    await manager.stop(None)
+
+    channel.basic_cancel.assert_awaited_once_with("ctag-1")
