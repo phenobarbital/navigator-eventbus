@@ -25,6 +25,16 @@ from ..connection import BaseConnection
 from ..wrapper import BaseWrapper
 
 
+class RejectDelivery(Exception):
+    """Internal signal: settle the current delivery with a non-requeued nack.
+
+    Raised by a consumer callback (e.g. ``RabbitMQBrokerHook``) to tell
+    :meth:`RabbitMQConnection.wrap_callback` — the sole owner of delivery
+    settlement — to reject the message once, without acknowledging or
+    republishing it (FEAT-431 Module 4).
+    """
+
+
 class RabbitMQConnection(BaseConnection):
     """Manages connection and disconnection of the RabbitMQ service."""
 
@@ -156,6 +166,48 @@ class RabbitMQConnection(BaseConnection):
         """Ensure that the specified exchange exists in RabbitMQ."""
         await self.create_exchange(exchange_name, exchange_type, **kwargs)
 
+    async def ensure_queue(
+        self,
+        queue_name: str,
+        exchange_name: Optional[str] = None,
+        routing_key: Optional[str] = None,
+        durable: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        """Declare *queue_name* and, when *exchange_name* is given, bind it.
+
+        Args:
+            queue_name: Queue to declare.
+            exchange_name: Exchange to bind the queue to; when falsy the queue
+                is only declared.
+            routing_key: Binding key; ``None`` binds with ``""``.
+            durable: Whether the queue survives a broker restart.
+            **kwargs: Extra queue arguments (``x-dead-letter-exchange`` …).
+        """
+        await self.ensure_connection()
+        await self._channel.queue_declare(
+            queue=queue_name,
+            durable=durable,
+            arguments=kwargs or None,
+        )
+        if exchange_name:
+            await self._channel.queue_bind(
+                queue=queue_name,
+                exchange=exchange_name,
+                routing_key=routing_key or "",
+            )
+        self.logger.info(f"Queue '{queue_name}' ensured (exchange={exchange_name!r}).")
+
+    async def reject_message(self, message: Any, requeue: bool = False) -> None:
+        """Negatively acknowledge *message* (``basic_nack``).
+
+        Args:
+            message: The ``aiormq.abc.DeliveredMessage`` to reject.
+            requeue: Whether the broker should requeue the message.
+        """
+        await self._channel.basic_nack(message.delivery_tag, requeue=requeue)
+        self.logger.debug(f"Message rejected: {message.delivery_tag} (requeue={requeue})")
+
     async def publish_message(
         self,
         body: Union[str, list, dict, Any],
@@ -254,6 +306,12 @@ class RabbitMQConnection(BaseConnection):
                 # Acknowledge the message to indicate it has been processed
                 await self._channel.basic_ack(message.delivery_tag)
                 self.logger.debug(f"Message acknowledged: {message.delivery_tag}")
+            except RejectDelivery as reject:
+                # The callback asked for a non-requeued rejection: settle once
+                # and return — no ack, no retry/republish (FEAT-431 Module 4).
+                self.logger.warning(f"Message {message.delivery_tag} rejected: {reject}")
+                await self.reject_message(message, requeue=False)
+                return
             except Exception as e:
                 self.logger.warning(f"Error processing message: {e}")
                 # Get retry count from message properties headers
