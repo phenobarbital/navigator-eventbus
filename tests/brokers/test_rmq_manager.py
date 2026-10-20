@@ -216,3 +216,20 @@ async def test_event_subscribe_consumer_cancelled_on_stop(
     await manager.stop(None)
 
     channel.basic_cancel.assert_awaited_once_with("ctag-1")
+
+
+async def test_start_failure_releases_workers_and_connection(
+    manager_kwargs, patched, channel, monkeypatch
+):
+    """A failing subscribe during ``start`` tears down workers and connection."""
+    manager = RMQManager(callback=AsyncMock(), **manager_kwargs)
+
+    async def boom(app):
+        raise RuntimeError("subscribe failed")
+
+    monkeypatch.setattr(manager, "_subscribe", boom)
+    with pytest.raises(RuntimeError, match="subscribe failed"):
+        await manager.start(web.Application())
+
+    assert not manager._workers or all(w.done() for w in manager._workers)
+    assert manager._connection is None

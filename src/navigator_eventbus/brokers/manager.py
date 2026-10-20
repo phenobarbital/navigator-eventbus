@@ -48,7 +48,14 @@ class BrokerManager(BrokerProducer, ABC):
         await self.connect()
         await self.start_workers()
         if self._auto_subscribe:
-            await self._subscribe(app)
+            try:
+                await self._subscribe(app)
+            except BaseException:
+                # aiohttp may not run on_shutdown after a failed startup:
+                # release workers and the connection before re-raising.
+                self.logger.exception("Subscribe failed during start; shutting down.")
+                await self.stop(app)
+                raise
         else:
             self.logger.debug("auto_subscribe=False: consumer side not subscribed.")
 
@@ -60,8 +67,8 @@ class BrokerManager(BrokerProducer, ABC):
         """
         try:
             await self._stop_consuming()
-        except Exception as err:  # pylint: disable=broad-except
-            self.logger.error(f"Error stopping consumer side: {err}")
+        except Exception:  # pylint: disable=broad-except
+            self.logger.exception("Error stopping consumer side")
         # BrokerProducer.stop: event_queue.join() → cancel/gather workers → disconnect()
         await super().stop(app)
 

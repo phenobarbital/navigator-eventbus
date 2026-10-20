@@ -12,7 +12,11 @@ from .consumer import SQSConsumer
 
 
 class SQSManager(BrokerManager, SQSConsumer):
-    """Unified SQS publisher/consumer sharing one connection."""
+    """Unified SQS publisher/consumer sharing one connection.
+
+    Consumer tasks are cancelled mid-handler on shutdown, so an unfinished
+    message is redelivered after its visibility timeout/pending reclaim (at-least-once).
+    """
 
     _name_: str = "sqs_manager"
 

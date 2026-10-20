@@ -12,7 +12,11 @@ from .consumer import RedisConsumer
 
 
 class RedisManager(BrokerManager, RedisConsumer):
-    """Unified Redis Streams publisher/consumer sharing one connection."""
+    """Unified Redis Streams publisher/consumer sharing one connection.
+
+    Consumer tasks are cancelled mid-handler on shutdown, so an unfinished
+    message stays pending and is reclaimed later (at-least-once).
+    """
 
     _name_: str = "redis_manager"
 

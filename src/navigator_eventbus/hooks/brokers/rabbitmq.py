@@ -68,6 +68,7 @@ class RabbitMQBrokerHook(BaseBrokerHook):
             # The connection's wrap_callback owns settlement (FEAT-431 M4):
             # signal a non-requeued rejection instead of nacking here, so
             # the delivery is never both rejected and acknowledged.
+            # Lazy on purpose: the connection module imports aiormq, an optional dependency.
             from navigator_eventbus.brokers.rabbitmq.connection import RejectDelivery
 
             raise RejectDelivery(str(exc)) from exc

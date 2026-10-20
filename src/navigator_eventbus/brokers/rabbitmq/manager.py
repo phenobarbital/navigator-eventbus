@@ -83,10 +83,12 @@ class RMQManager(BrokerManager, RMQConsumer):
             try:
                 await self._channel.basic_cancel(tag)
             except Exception as err:
-                self.logger.warning(f"Could not cancel consumer tag {tag}: {err}")
+                self.logger.warning("Could not cancel consumer tag %s: %s", tag, err)
         try:
             await asyncio.wait_for(self._idle.wait(), timeout=self._inflight_timeout)
         except asyncio.TimeoutError:
             self.logger.warning(
-                f"{self._inflight} delivery(ies) still in flight after {self._inflight_timeout}s; continuing shutdown."
+                "%s delivery(ies) still in flight after %ss; continuing shutdown.",
+                self._inflight,
+                self._inflight_timeout,
             )
