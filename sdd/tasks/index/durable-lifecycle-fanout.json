@@ -79,7 +79,7 @@
       "feature_id": "FEAT-711",
       "feature": "durable-lifecycle-fanout",
       "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "L",
       "depends_on": [
@@ -89,8 +89,9 @@
       "parallelism_notes": "imports OutboxStore/OutboxFullError and tests with SqliteOutbox from TASK-4555 (src/navigator_eventbus/outbox.py).",
       "assigned_to": null,
       "started_at": "2026-10-20T23:25:44+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4556-buscore-outbox-relay.md"
+      "completed_at": "2026-10-20T23:37:12+00:00",
+      "file": "sdd/tasks/completed/TASK-4556-buscore-outbox-relay.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4557",
