@@ -29,19 +29,22 @@ New ADDITIVE-ONLY kwargs: ``severity=`` on ``publish``/``emit`` and
 - ``BUS_CHANNEL_PREFIX`` (default ``evb:events:`` — FEAT-312 neutral knob)
 """
 import asyncio
+import os
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional
 
 from navconfig import config as nav_config
 from navconfig.logging import logging
 
 if TYPE_CHECKING:  # imported lazily at runtime to avoid a circular import
+    from navigator_eventbus.backends.base import TransportBackend
     from navigator_eventbus.core import BusCore
     from navigator_eventbus.envelope import EventEnvelope, Severity
+    from navigator_eventbus.outbox import OutboxStore
 
 #: Default Redis channel prefix (FEAT-312: neutral default, override via
 #: constructor kwarg or the ``BUS_CHANNEL_PREFIX`` navconfig key).
@@ -132,7 +135,17 @@ def _bus_config() -> Dict[str, Any]:
         "retry_base_delay": _get("BUS_RETRY_BASE_DELAY", 0.1, float),
         "default_backpressure": _get("BUS_DEFAULT_BACKPRESSURE", "block", str),
         "drain_timeout": _get("BUS_DRAIN_TIMEOUT", 5.0, float),
+        "relay_interval": _get("BUS_OUTBOX_RELAY_INTERVAL", 5.0, float),
     }
+
+
+def _truthy(value: Any) -> bool:
+    """Interpret a navconfig value as a boolean.
+
+    Accepted true values are ``"1"``, ``"true"``, ``"yes"``, ``"on"``,
+    and ``True``.
+    """
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class EventBus:
@@ -154,6 +167,13 @@ class EventBus:
         channel_prefix: Redis channel prefix override (FEAT-312 — default
             ``evb:events:``, also configurable via the ``BUS_CHANNEL_PREFIX``
             navconfig key).
+        backend: Explicit transport backend. Takes precedence over
+            ``transport`` and ``use_redis``.
+        transport: Named transport (``memory``, ``pubsub``, or ``streams``).
+            When omitted, reads ``BUS_TRANSPORT`` before legacy selection.
+        publish_only: Do not start the backend consumer.
+        outbox: Durable outbox store or SQLite path. When omitted,
+            ``BUS_OUTBOX_PATH`` is used when configured.
         **bus_options: Additive BusCore overrides (``workers=``,
             ``queue_size=``, ``retry_attempts=``, ...) taking precedence
             over the navconfig ``BUS_*`` defaults.
@@ -167,15 +187,15 @@ class EventBus:
         use_redis: bool = False,
         *,
         channel_prefix: Optional[str] = None,
+        backend: "Optional[TransportBackend]" = None,
+        transport: "Optional[Literal['memory', 'pubsub', 'streams']]" = None,
+        publish_only: bool = False,
+        outbox: "Optional[OutboxStore | str | os.PathLike]" = None,
         **bus_options: Any,
-    ):
+    ) -> None:
         # Lazy imports — envelope/converters import THIS module for
         # EventPriority/Event, so bus modules cannot be imported at the
         # top of evb.py without a circular-import failure.
-        from navigator_eventbus.backends.memory import MemoryBackend
-        from navigator_eventbus.backends.redis_pubsub import (
-            RedisPubSubBackend,
-        )
         from navigator_eventbus.core import BusCore
 
         self.use_redis = use_redis and redis_url is not None
@@ -184,13 +204,14 @@ class EventBus:
             "BUS_CHANNEL_PREFIX", fallback=DEFAULT_CHANNEL_PREFIX
         )
 
-        backend = (
-            RedisPubSubBackend(redis_url, channel_prefix=self.channel_prefix)
-            if self.use_redis
-            else MemoryBackend()
-        )
+        backend = self._select_backend(backend, transport)
         core_opts = _bus_config()
         core_opts.update(bus_options)
+        core_opts.setdefault("outbox", self._resolve_outbox(outbox))
+        core_opts.setdefault(
+            "publish_only",
+            publish_only or _truthy(nav_config.get("BUS_PUBLISH_ONLY", fallback=False)),
+        )
         self._core: "BusCore" = BusCore(backend=backend, **core_opts)
 
         # Event history (optional, for replay) — compat shim, bounded.
@@ -200,6 +221,60 @@ class EventBus:
         self.logger = logging.getLogger("navigator_eventbus.evb")
         self._started = False
         self._closed = False
+
+    def _select_backend(
+        self, backend: "Optional[TransportBackend]", transport: Optional[str]
+    ) -> "TransportBackend":
+        """Pick a backend from explicit, configured, or legacy selection.
+
+        Explicit backends take precedence over explicit/configured transport
+        names, which in turn take precedence over ``use_redis``.
+
+        Raises:
+            ValueError: If a Redis transport lacks ``redis_url`` or the
+                transport name is unknown.
+        """
+        from navigator_eventbus.backends.memory import MemoryBackend
+        from navigator_eventbus.backends.redis_pubsub import RedisPubSubBackend
+
+        if backend is not None:
+            return backend
+        transport = transport or nav_config.get("BUS_TRANSPORT", fallback=None)
+        if transport is None:
+            return (
+                RedisPubSubBackend(self.redis_url, channel_prefix=self.channel_prefix)
+                if self.use_redis
+                else MemoryBackend()
+            )
+        if transport == "memory":
+            return MemoryBackend()
+        if transport in ("pubsub", "streams") and self.redis_url is None:
+            raise ValueError(f"transport={transport!r} requires redis_url")
+        if transport == "pubsub":
+            return RedisPubSubBackend(self.redis_url, channel_prefix=self.channel_prefix)
+        if transport == "streams":
+            from navigator_eventbus.backends.redis_streams import RedisStreamsBackend
+
+            return RedisStreamsBackend(self.redis_url)
+        raise ValueError(
+            f"Unknown transport {transport!r}; expected one of 'memory', 'pubsub', 'streams'"
+        )
+
+    def _resolve_outbox(
+        self, outbox: "Optional[OutboxStore | str | os.PathLike]"
+    ) -> "Optional[OutboxStore]":
+        """Build an outbox from a configured path or pass through a store."""
+        from navigator_eventbus.outbox import SqliteOutbox
+
+        if outbox is None:
+            outbox = nav_config.get("BUS_OUTBOX_PATH", fallback=None)
+        if outbox is None:
+            return None
+        if isinstance(outbox, (str, os.PathLike)):
+            max_rows = int(nav_config.get("BUS_OUTBOX_MAX_ROWS", fallback=None) or 1_000_000)
+            overflow = nav_config.get("BUS_OUTBOX_OVERFLOW", fallback=None) or "reject_new"
+            return SqliteOutbox(outbox, max_rows=max_rows, overflow=overflow)
+        return outbox
 
     @property
     def core(self) -> "BusCore":
