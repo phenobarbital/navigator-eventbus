@@ -29,7 +29,7 @@ hooks:
     - matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit"
       hooks:
         - type: command
-          command: 'python3 "$CLAUDE_PROJECT_DIR/packages/ai-parrot/src/parrot/flows/dev_loop/worktree_environment.py" --hook || exit 2'
+          command: '/home/jesuslara/proyectos/navigator-eventbus/.venv/bin/python3 -I /home/jesuslara/proyectos/navigator-eventbus/.venv/lib/python3.11/site-packages/parrot/flows/dev_loop/worktree_environment.py --hook || exit 2'
           timeout: 10
 ---
 
