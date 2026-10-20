@@ -1,4 +1,5 @@
 """SQSManager unit tests (FEAT-431 Module 3, TASK-4567)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -38,8 +39,15 @@ def patched(monkeypatch):
 
 
 def test_manager_mro_sqs():
-    assert SQSManager.__mro__[:7] == (SQSManager, BrokerManager, BrokerProducer, SQSConsumer,
-                                      SQSConnection, BaseConnection, BrokerConsumer)
+    assert SQSManager.__mro__[:7] == (
+        SQSManager,
+        BrokerManager,
+        BrokerProducer,
+        SQSConsumer,
+        SQSConnection,
+        BaseConnection,
+        BrokerConsumer,
+    )
 
 
 def test_sqs_manager_setup_registers_name():
@@ -69,14 +77,18 @@ async def test_manager_stop_consumers_first(patched):
 
 async def test_manager_stop_manual_or_no_subscription(patched):
     cb = AsyncMock()
-    m = SQSManager(credentials=CREDS, queue_name="q", num_workers=1, auto_subscribe=False)
+    m = SQSManager(
+        credentials=CREDS, queue_name="q", num_workers=1, auto_subscribe=False
+    )
     await m.start(web.Application())
     await m.stop(None)
     assert not any(e.startswith("consumer_cancelled") for e in patched)
     assert m._consumer_tasks == []
 
     patched.clear()
-    m = SQSManager(credentials=CREDS, queue_name="q", num_workers=1, auto_subscribe=False)
+    m = SQSManager(
+        credentials=CREDS, queue_name="q", num_workers=1, auto_subscribe=False
+    )
     await m.start(web.Application())
     await m.subscribe_to_events("q1", cb)
     await m.subscribe_to_events("q2", cb)
