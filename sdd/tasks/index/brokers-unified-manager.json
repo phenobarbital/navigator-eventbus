@@ -1,0 +1,201 @@
+{
+  "feature": "brokers-unified-manager",
+  "feature_id": "FEAT-431",
+  "spec": "sdd/specs/brokers-unified-manager.spec.md",
+  "type": "feature",
+  "base_branch": "main",
+  "created_at": "2026-10-20T23:13:09+00:00",
+  "completed_at": null,
+  "parallel_semantics": "exclusive",
+  "validation_contract": "required",
+  "test_contract": {
+    "schema": 2,
+    "runners": [
+      {
+        "kind": "pytest",
+        "targets": [
+          "tests/brokers/test_producer.py",
+          "tests/brokers/test_consumer_fixes.py",
+          "tests/brokers/test_rabbitmq_settlement.py",
+          "tests/brokers/test_manager.py",
+          "tests/brokers/test_rmq_manager.py",
+          "tests/brokers/test_redis_manager.py",
+          "tests/brokers/test_sqs_manager.py",
+          "tests/brokers/test_rabbitmq.py",
+          "tests/brokers/test_hook_rewire.py",
+          "tests/brokers/test_sqs.py",
+          "tests/brokers/test_redis_consumer.py",
+          "tests/brokers/test_manager_integration.py"
+        ],
+        "settings": {
+          "markers": ""
+        },
+        "tiers": [
+          "task",
+          "merge",
+          "feature"
+        ]
+      }
+    ],
+    "digest": "sha256:a74ed2d258d6f91f90bd5657bc526f246a01ac7faa988408566eb949bd9f1c9e"
+  },
+  "tasks": [
+    {
+      "id": "TASK-4561",
+      "slug": "producer-endpoint-path",
+      "title": "Configurable producer endpoint path + remove publish latency",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "S",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "No dependencies: owns brokers/producer.py and tests/brokers/test_producer.py exclusively; no other task edits them.",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4561-producer-endpoint-path.md"
+    },
+    {
+      "id": "TASK-4562",
+      "slug": "consumer-fixes",
+      "title": "Consumer fixes — exchange clobber (D1), single callback wrap, consumer-tag tracking",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "No dependencies: owns rabbitmq/consumer.py + sqs/consumer.py; reads rabbitmq/connection.py only (TASK-4563 edits it, no symbol needed from it).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4562-consumer-fixes.md"
+    },
+    {
+      "id": "TASK-4563",
+      "slug": "rabbitmq-settlement",
+      "title": "RabbitMQConnection ensure_queue / reject_message + single-owner hook settlement",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "No dependencies: owns rabbitmq/connection.py + hooks/brokers/rabbitmq.py; nothing it needs is created elsewhere.",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4563-rabbitmq-settlement.md"
+    },
+    {
+      "id": "TASK-4564",
+      "slug": "broker-manager-base",
+      "title": "BrokerManager — generic unified producer/consumer mixin",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "No dependencies: creates brokers/manager.py and edits brokers/__init__.py; subclasses the existing BrokerProducer unchanged by TASK-4561's additive kwarg.",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4564-broker-manager-base.md"
+    },
+    {
+      "id": "TASK-4565",
+      "slug": "rmq-manager",
+      "title": "RMQManager — RabbitMQ producer + consumer over one connection",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4562",
+        "TASK-4564"
+      ],
+      "parallel": true,
+      "parallelism_notes": "Imports BrokerManager from TASK-4564 (brokers/manager.py); uses RMQConsumer._consumer_tags and the D1 fix from TASK-4562 (rabbitmq/consumer.py).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4565-rmq-manager.md"
+    },
+    {
+      "id": "TASK-4566",
+      "slug": "redis-manager",
+      "title": "RedisManager — Redis Streams producer + consumer over one connection",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "medium",
+      "effort": "S",
+      "depends_on": [
+        "TASK-4564"
+      ],
+      "parallel": true,
+      "parallelism_notes": "Imports BrokerManager from TASK-4564 (brokers/manager.py); parallel with TASK-4565/4567 (disjoint redis/ files).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4566-redis-manager.md"
+    },
+    {
+      "id": "TASK-4567",
+      "slug": "sqs-manager",
+      "title": "SQSManager — AWS SQS producer + consumer over one connection",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "medium",
+      "effort": "S",
+      "depends_on": [
+        "TASK-4564"
+      ],
+      "parallel": true,
+      "parallelism_notes": "Imports BrokerManager from TASK-4564 (brokers/manager.py); parallel with TASK-4565/4566 (disjoint sqs/ files).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4567-sqs-manager.md"
+    },
+    {
+      "id": "TASK-4568",
+      "slug": "manager-integration-release",
+      "title": "Manager integration tests + release prep (next minor)",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "pending",
+      "priority": "medium",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4561",
+        "TASK-4562",
+        "TASK-4563",
+        "TASK-4565",
+        "TASK-4566"
+      ],
+      "parallel": true,
+      "parallelism_notes": "Imports RMQManager (TASK-4565, rabbitmq/manager.py) and RedisManager (TASK-4566, redis/manager.py); the D1 exchange-binding round trip needs TASK-4562 (rabbitmq/consumer.py); CHANGELOG documents endpoint_path from TASK-4561 (producer.py) and ensure_queue/reject_message from TASK-4563 (rabbitmq/connection.py).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4568-manager-integration-release.md"
+    }
+  ]
+}
