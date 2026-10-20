@@ -123,6 +123,8 @@ class BusCore:
         relay_interval: Seconds between outbox relay passes.
         relay_batch: Maximum due outbox rows published per relay pass.
         relay_max_backoff: Maximum retry delay for a failed backend publish.
+        publish_only: When True, start() never starts the backend consumer —
+            this process only publishes (it never joins a consumer group).
 
     Raises:
         ValueError: If a configured backpressure policy name is unknown.
@@ -148,6 +150,7 @@ class BusCore:
         relay_interval: float = 5.0,
         relay_batch: int = 500,
         relay_max_backoff: float = 300.0,
+        publish_only: bool = False,
     ) -> None:
         for policy in [default_backpressure, *(backpressure or {}).values()]:
             if policy not in _VALID_POLICIES:
@@ -174,6 +177,7 @@ class BusCore:
         self._relay_interval = relay_interval
         self._relay_batch = max(1, relay_batch)
         self._relay_max_backoff = relay_max_backoff
+        self._publish_only = publish_only
         self._relay_task: Optional[asyncio.Task[None]] = None
         self._outbox_inflight: set[str] = set()
         self._outbox_attempts: dict[str, int] = {}
@@ -239,8 +243,10 @@ class BusCore:
         self._runner = asyncio.create_task(
             self._run_workers(), name="bus-core-workers"
         )
-        if self._backend is not None:
+        if self._backend is not None and not self._publish_only:
             await self._backend.start_consumer(self._on_transport_envelope)
+        elif self._backend is not None:
+            self.logger.debug("BusCore publish-only: backend consumer not started")
         if self._backend is not None and self._outbox is not None:
             self._relay_task = asyncio.create_task(
                 self._relay_loop(), name="bus-core-outbox-relay"
