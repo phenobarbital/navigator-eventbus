@@ -3,6 +3,22 @@
 All notable changes to `navigator-eventbus` are documented in this file.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] — Unreleased
+
+Ships FEAT-711 (durable lifecycle fan-out).
+
+### Added
+
+- Registry `attach_bus`/`detach_bus` methods and a registry/subscription serializer hook.
+- `EventBus(backend=, transport=, publish_only=, outbox=)` configuration.
+- `OutboxStore`, `SqliteOutbox`, and `OutboxFullError`.
+- `BusCore(outbox=, publish_only=, relay_*)` configuration and `BusCore.stats()`.
+
+### Delivery contract
+
+- With an outbox configured, delivery from `emit` to a Streams consumer is **at-least-once**;
+  consumers dedup by `envelope.event_id`.
+
 ## [0.1.0] — Unreleased (pending tag + PyPI publish)
 
 Supersedes `0.1.0rc2`. Ships the FEAT-319 (EventBus Consolidation) M1+M2

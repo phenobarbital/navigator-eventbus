@@ -187,7 +187,22 @@ constructor kwarg where noted.
 | `BUS_RETRY_BASE_DELAY` | `retry_base_delay=` | `0.1` (s) | Backoff base delay |
 | `BUS_DEFAULT_BACKPRESSURE` | `default_backpressure=` | `"block"` | `block` \| `drop_oldest` \| `reject` |
 | `BUS_DRAIN_TIMEOUT` | `drain_timeout=` | `5.0` (s) | Deadline for graceful `close()` drain |
+| `BUS_TRANSPORT` | `transport=` (on `EventBus`) | unset | `memory` \| `pubsub` \| `streams`; `backend=` wins, then `transport=`, then `use_redis` |
+| `BUS_PUBLISH_ONLY` | `publish_only=` | `false` | Never start the backend consumer (producer processes) |
+| `BUS_OUTBOX_PATH` | `outbox=` (on `EventBus`) | unset | SQLite outbox file — enables the durable producer outbox |
+| `BUS_OUTBOX_MAX_ROWS` | `max_rows=` (on `SqliteOutbox`) | `1000000` | Row cap |
+| `BUS_OUTBOX_OVERFLOW` | `overflow=` (on `SqliteOutbox`) | `"reject_new"` | `reject_new` \| `drop_oldest` |
+| `BUS_OUTBOX_RELAY_INTERVAL` | `relay_interval=` | `5.0` (s) | Relay retry loop period |
 | `BUS_CHANNEL_PREFIX` | `channel_prefix=` (on `EventBus`) | `"evb:events:"` | Redis pub/sub channel prefix — **see warning above** |
+
+#### Durable producer outbox
+
+Use a persistent per-instance volume for the SQLite outbox; ephemeral container disk defeats restart recovery.
+Each process or worker must use its own outbox file—never share one file between gunicorn workers.
+There is a residual window between a lifecycle emit and the scheduled `bus.emit` task, so a process crash can still lose that event.
+Duplicates are expected after an unconfirmed publish; consumers must deduplicate by `event_id`.
+There is no global ordering across workers; order by event timestamp when needed.
+A full outbox is an operational alarm, exposed through `BusCore.stats()`.
 
 ### Redis Streams backend (`backends/redis_streams.py`)
 
