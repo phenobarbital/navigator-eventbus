@@ -6,6 +6,7 @@ Mudado desde
 lazy-import ahora apunta al port interno de FEAT-316
 (``navigator_eventbus.brokers.rabbitmq.RabbitMQConnection``) — el paquete
 ya no depende del framework navigator externo para soporte de brokers.
+FEAT-431 keeps delivery settlement in the connection callback wrapper.
 """
 from typing import Any
 
@@ -64,5 +65,9 @@ class RabbitMQBrokerHook(BaseBrokerHook):
             )
         except Exception as exc:
             self.logger.error(f"RabbitMQ callback error: {exc}")
-            if self._connection:
-                await self._connection.reject_message(message, requeue=False)
+            # The connection's wrap_callback owns settlement (FEAT-431 M4):
+            # signal a non-requeued rejection instead of nacking here, so
+            # the delivery is never both rejected and acknowledged.
+            from navigator_eventbus.brokers.rabbitmq.connection import RejectDelivery
+
+            raise RejectDelivery(str(exc)) from exc
