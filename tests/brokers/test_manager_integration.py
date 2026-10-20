@@ -2,6 +2,7 @@
 
 Skipped gracefully when RabbitMQ / Redis are not reachable.
 """
+
 from __future__ import annotations
 
 import asyncio
