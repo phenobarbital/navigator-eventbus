@@ -1,0 +1,176 @@
+{
+  "feature": "durable-lifecycle-fanout",
+  "feature_id": "FEAT-711",
+  "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+  "type": "feature",
+  "base_branch": "main",
+  "created_at": "2026-10-20T23:01:16+00:00",
+  "completed_at": null,
+  "parallel_semantics": "exclusive",
+  "validation_contract": "required",
+  "test_contract": {
+    "schema": 2,
+    "runners": [
+      {
+        "kind": "pytest",
+        "targets": [
+          "tests/lifecycle/test_registry.py",
+          "tests/lifecycle/test_registry_fire_and_forget.py",
+          "tests/lifecycle/test_dual_emit_integration.py",
+          "tests/test_core.py",
+          "tests/test_backends_streams.py",
+          "tests/test_evb.py"
+        ],
+        "settings": {
+          "markers": ""
+        },
+        "tiers": [
+          "task",
+          "merge",
+          "feature"
+        ]
+      }
+    ],
+    "digest": "sha256:0ffce25c334c21d3ee104a8ca64f2dd4427edf0a93fa130dd5a7bfa4907c4a65"
+  },
+  "tasks": [
+    {
+      "id": "TASK-4554",
+      "slug": "registry-bus-hook",
+      "title": "Registry bus hook — attach_bus / detach_bus + payload serializer",
+      "feature_id": "FEAT-711",
+      "feature": "durable-lifecycle-fanout",
+      "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "No dependencies: edits only lifecycle/registry.py and a new test file; runs alongside TASK-4555 (outbox.py).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4554-registry-bus-hook.md"
+    },
+    {
+      "id": "TASK-4555",
+      "slug": "outbox-store",
+      "title": "OutboxStore protocol + SqliteOutbox",
+      "feature_id": "FEAT-711",
+      "feature": "durable-lifecycle-fanout",
+      "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "No dependencies: creates outbox.py (stdlib sqlite3) and exports it from __init__.py; disjoint from TASK-4554's registry.py.",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4555-outbox-store.md"
+    },
+    {
+      "id": "TASK-4556",
+      "slug": "buscore-outbox-relay",
+      "title": "BusCore write-ahead outbox + relay loop + stats()",
+      "feature_id": "FEAT-711",
+      "feature": "durable-lifecycle-fanout",
+      "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "L",
+      "depends_on": [
+        "TASK-4555"
+      ],
+      "parallel": true,
+      "parallelism_notes": "imports OutboxStore/OutboxFullError and tests with SqliteOutbox from TASK-4555 (src/navigator_eventbus/outbox.py).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4556-buscore-outbox-relay.md"
+    },
+    {
+      "id": "TASK-4557",
+      "slug": "publish-only-mode",
+      "title": "Publish-only mode for BusCore",
+      "feature_id": "FEAT-711",
+      "feature": "durable-lifecycle-fanout",
+      "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+      "status": "pending",
+      "priority": "medium",
+      "effort": "S",
+      "depends_on": [
+        "TASK-4556"
+      ],
+      "parallel": true,
+      "parallelism_notes": "TASK-4556 also modifies src/navigator_eventbus/core.py (same __init__ signature and start()); serialized after it, and anchors on its relay_max_backoff kwarg.",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4557-publish-only-mode.md"
+    },
+    {
+      "id": "TASK-4558",
+      "slug": "eventbus-transport-selection",
+      "title": "EventBus facade — backend= / transport= / publish_only= / outbox=",
+      "feature_id": "FEAT-711",
+      "feature": "durable-lifecycle-fanout",
+      "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4555",
+        "TASK-4557"
+      ],
+      "parallel": true,
+      "parallelism_notes": "builds SqliteOutbox from TASK-4555 (outbox.py) and forwards outbox=/relay_interval=/publish_only= to the BusCore kwargs added by TASK-4556/TASK-4557 (core.py).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4558-eventbus-transport-selection.md"
+    },
+    {
+      "id": "TASK-4559",
+      "slug": "durability-integration-tests",
+      "title": "Durability integration tests + emit-overhead budget with outbox",
+      "feature_id": "FEAT-711",
+      "feature": "durable-lifecycle-fanout",
+      "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4554",
+        "TASK-4558"
+      ],
+      "parallel": true,
+      "parallelism_notes": "uses EventRegistry.attach_bus from TASK-4554 (lifecycle/registry.py) and EventBus(transport=, publish_only=, outbox=) from TASK-4558 (evb.py).",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4559-durability-integration-tests.md"
+    },
+    {
+      "id": "TASK-4560",
+      "slug": "release-0-4-0",
+      "title": "Release 0.4.0 — version bump, CHANGELOG, README config + deploy note",
+      "feature_id": "FEAT-711",
+      "feature": "durable-lifecycle-fanout",
+      "spec": "sdd/specs/durable-lifecycle-fanout.spec.md",
+      "status": "pending",
+      "priority": "medium",
+      "effort": "S",
+      "depends_on": [
+        "TASK-4559"
+      ],
+      "parallel": true,
+      "parallelism_notes": "documents the merged API and defaults; runs after TASK-4559 so the release notes describe the verified end-to-end behavior.",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4560-release-0-4-0.md"
+    }
+  ]
+}

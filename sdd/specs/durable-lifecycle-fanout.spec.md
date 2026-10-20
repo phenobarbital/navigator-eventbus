@@ -12,7 +12,7 @@ base_branch: main
 **Feature ID**: FEAT-711 (reserved in the shared ai-parrot ledger `sdd/tasks/.id_ledger.json`, like FEAT-430..433)
 **Date**: 2026-10-20
 **Author**: Jesus Lara (with Claude)
-**Status**: draft
+**Status**: approved
 **Target version**: navigator-eventbus 0.4.0
 **Downstream**: ai-parrot FEAT-710 `parrot-telemetry-event-fanout` (consumer of this release); NVP-505 BigQuery sink (consumer of the stream)
 
@@ -251,14 +251,14 @@ string `outbox=` builds `SqliteOutbox(path)`. The legacy pub/sub-only listener (
 | producer/consumer split | publish-only producer + separate consumer process: the producer never appears in `XINFO CONSUMERS` |
 
 ### Validation Contract
-- `tests/lifecycle/test_registry.py`
-- `tests/lifecycle/test_registry_fire_and_forget.py`
-- `tests/lifecycle/test_dual_emit_integration.py`
-- `tests/test_core.py`
-- `tests/test_backends_streams.py`
-- `tests/test_evb.py`
-
----
+tests:
+- tests/lifecycle/test_registry.py
+- tests/lifecycle/test_registry_fire_and_forget.py
+- tests/lifecycle/test_dual_emit_integration.py
+- tests/test_core.py
+- tests/test_backends_streams.py
+- tests/test_evb.py
+markers: none
 
 ## 5. Acceptance Criteria
 
@@ -386,3 +386,4 @@ None new (stdlib `sqlite3`; `redis>=5` is already in the `[redis]` extra).
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 0.1 | 2026-10-20 | Jesus Lara / Claude | Initial draft (from the FEAT-710 design review, codex finding S10) |
+| 0.2 | 2026-10-21 | Jesus Lara / Claude | Approved; Validation Contract reformatted to the parser's `tests:`/`markers:` form; decomposed into TASK-4554..4560 |
