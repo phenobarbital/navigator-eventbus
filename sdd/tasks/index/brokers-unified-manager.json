@@ -47,7 +47,7 @@
       "feature_id": "FEAT-431",
       "feature": "brokers-unified-manager",
       "spec": "sdd/specs/brokers-unified-manager.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "S",
       "depends_on": [],
@@ -55,8 +55,9 @@
       "parallelism_notes": "No dependencies: owns brokers/producer.py and tests/brokers/test_producer.py exclusively; no other task edits them.",
       "assigned_to": null,
       "started_at": "2026-10-20T23:28:46+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4561-producer-endpoint-path.md"
+      "completed_at": "2026-10-20T23:33:00+00:00",
+      "file": "sdd/tasks/completed/TASK-4561-producer-endpoint-path.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4562",
