@@ -1,0 +1,129 @@
+{
+  "feature": "pull-queues",
+  "feature_id": "FEAT-432",
+  "spec": "sdd/specs/pull-queues.spec.md",
+  "type": "feature",
+  "base_branch": "main",
+  "created_at": "2026-08-14T00:00:00+00:00",
+  "completed_at": "2026-08-14T00:00:00+00:00",
+  "tasks": [
+    {
+      "id": "TASK-1857",
+      "slug": "queue-receipt-handles",
+      "title": "Stateless HMAC-signed receipt handles",
+      "feature_id": "FEAT-432",
+      "feature": "pull-queues",
+      "spec": "sdd/specs/pull-queues.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "",
+      "assigned_to": null,
+      "started_at": "2026-08-14T00:00:00+00:00",
+      "completed_at": "2026-08-14T00:00:00+00:00",
+      "file": "sdd/specs/pull-queues.spec.md"
+    },
+    {
+      "id": "TASK-1858",
+      "slug": "queue-config-and-models",
+      "title": "QueueConfig/QueueRegistry + HTTP wire models",
+      "feature_id": "FEAT-432",
+      "feature": "pull-queues",
+      "spec": "sdd/specs/pull-queues.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "",
+      "assigned_to": null,
+      "started_at": "2026-08-14T00:00:00+00:00",
+      "completed_at": "2026-08-14T00:00:00+00:00",
+      "file": "sdd/specs/pull-queues.spec.md"
+    },
+    {
+      "id": "TASK-1859",
+      "slug": "queue-store",
+      "title": "QueueStore: lease engine over Redis Streams consumer groups",
+      "feature_id": "FEAT-432",
+      "feature": "pull-queues",
+      "spec": "sdd/specs/pull-queues.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "L",
+      "depends_on": [
+        "TASK-1857",
+        "TASK-1858"
+      ],
+      "parallel": false,
+      "parallelism_notes": "",
+      "assigned_to": null,
+      "started_at": "2026-08-14T00:00:00+00:00",
+      "completed_at": "2026-08-14T00:00:00+00:00",
+      "file": "sdd/specs/pull-queues.spec.md"
+    },
+    {
+      "id": "TASK-1860",
+      "slug": "queue-http-api",
+      "title": "QueueAPI: send/receive/delete/visibility/describe/admin",
+      "feature_id": "FEAT-432",
+      "feature": "pull-queues",
+      "spec": "sdd/specs/pull-queues.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "L",
+      "depends_on": [
+        "TASK-1859"
+      ],
+      "parallel": false,
+      "parallelism_notes": "",
+      "assigned_to": null,
+      "started_at": "2026-08-14T00:00:00+00:00",
+      "completed_at": "2026-08-14T00:00:00+00:00",
+      "file": "sdd/specs/pull-queues.spec.md"
+    },
+    {
+      "id": "TASK-1861",
+      "slug": "queue-integration-redis",
+      "title": "Integration suite asserting the Redis semantics the design rests on",
+      "feature_id": "FEAT-432",
+      "feature": "pull-queues",
+      "spec": "sdd/specs/pull-queues.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [
+        "TASK-1859"
+      ],
+      "parallel": false,
+      "parallelism_notes": "",
+      "assigned_to": null,
+      "started_at": "2026-08-14T00:00:00+00:00",
+      "completed_at": "2026-08-14T00:00:00+00:00",
+      "file": "sdd/specs/pull-queues.spec.md"
+    },
+    {
+      "id": "TASK-1862",
+      "slug": "queue-feeder-exports-docs",
+      "title": "QueueFeeder, lazy exports, extras, TOPICS/CONTEXT/README",
+      "feature_id": "FEAT-432",
+      "feature": "pull-queues",
+      "spec": "sdd/specs/pull-queues.spec.md",
+      "status": "done",
+      "priority": "high",
+      "effort": "S",
+      "depends_on": [
+        "TASK-1860",
+        "TASK-1861"
+      ],
+      "parallel": false,
+      "parallelism_notes": "",
+      "assigned_to": null,
+      "started_at": "2026-08-14T00:00:00+00:00",
+      "completed_at": "2026-08-14T00:00:00+00:00",
+      "file": "sdd/specs/pull-queues.spec.md"
+    }
+  ]
+}

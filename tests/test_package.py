@@ -9,11 +9,39 @@ superset of ``parrot.core.events.__all__`` (it also re-exports BusCore,
 DLQHandler, IngressEnvelope, EventEnvelope, Severity, etc. — see spec §2
 "New Public Interfaces").
 """
+import re
+
 import navigator_eventbus
+from navigator_eventbus import version as version_module
 
 
 def test_package_imports():
-    assert navigator_eventbus.__version__ == "0.2.1"
+    """The root must re-export the metadata declared in ``version.py``.
+
+    Deliberately compared against ``version.py`` rather than a hard-coded
+    literal. That module is the single source of truth — ``pyproject.toml``
+    reads the version from it at build time — so duplicating the number here
+    would only guarantee this test goes stale on the next release, which is
+    exactly what had happened (it pinned ``0.2.1`` against a ``0.2.3``
+    package).
+
+    This is not a tautology: it exercises the root package's re-export
+    wiring, which now includes a module-level ``__getattr__`` for the lazy
+    queue exports — precisely the kind of change that can break attribute
+    resolution silently.
+    """
+    assert navigator_eventbus.__version__ == version_module.__version__
+    assert navigator_eventbus.__title__ == version_module.__title__
+    assert navigator_eventbus.__author__ == version_module.__author__
+    assert navigator_eventbus.__license__ == version_module.__license__
+
+
+def test_version_is_a_sane_release_string():
+    """Guard the shape, so an empty or malformed version cannot slip through."""
+    assert re.fullmatch(
+        r"\d+\.\d+(\.\d+)?([abrc]\d*|\.dev\d*|[-+.].+)?",
+        navigator_eventbus.__version__,
+    ), f"unexpected version string: {navigator_eventbus.__version__!r}"
 
 
 class TestPackageImports:

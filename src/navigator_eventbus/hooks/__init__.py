@@ -41,6 +41,15 @@ from navigator_eventbus.hooks.models import (
     create_multi_agent_whatsapp_hook,
     create_simple_whatsapp_hook,
 )
+from navigator_eventbus.hooks.webhook.models import (
+    WebhookEndpointConfig,
+    WebhookEndpointState,
+    WebhookHookConfig,
+)
+from navigator_eventbus.hooks.webhook.preprocess import (
+    PreprocessResult,
+    WebhookContext,
+)
 
 
 def __getattr__(name: str):
@@ -49,6 +58,10 @@ def __getattr__(name: str):
         # Generic hooks (migrated)
         "SchedulerHook": ".scheduler",
         "FileWatchdogHook": ".file_watchdog",
+        # Inbound webhook fabric (aiohttp request machinery stays lazy)
+        "ProviderWebhookHook": ".webhook.provider",
+        "WebhookIngestMixin": ".webhook.receiver",
+        "WebhookListenerHook": ".webhook.listener",
         # Broker hooks (migrated; Redis/RabbitMQ/SQS rewired to the internal
         # brokers port by FEAT-316 TASK-1818; gmqtt lazy-import intact)
         "BaseBrokerHook": ".brokers.base",
@@ -77,6 +90,10 @@ __all__ = [
     # Hooks (lazy, migrated)
     "SchedulerHook",
     "FileWatchdogHook",
+    # Inbound webhook fabric (lazy)
+    "ProviderWebhookHook",
+    "WebhookIngestMixin",
+    "WebhookListenerHook",
     # Brokers (lazy, migrated)
     "BaseBrokerHook",
     "RedisBrokerHook",
@@ -98,6 +115,13 @@ __all__ = [
     "WhatsAppRedisHookConfig",
     "MatrixHookConfig",
     "FilesystemHookConfig",
+    # Webhook configs + preprocessing contract (eager; see
+    # hooks/webhook/models.py for why these live outside hooks/models.py).
+    "WebhookEndpointConfig",
+    "WebhookEndpointState",
+    "WebhookHookConfig",
+    "PreprocessResult",
+    "WebhookContext",
     # Transition action models
     "TransitionAction",
     "TransitionActionType",
