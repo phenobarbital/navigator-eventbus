@@ -1,8 +1,8 @@
 ---
 # SDD flow type and base branch (FEAT-145).
-# - type: feature  (default)  → base_branch: main (this project uses main)
+# - type: feature  (default)  → base_branch: dev
 type: feature
-base_branch: main
+base_branch: dev
 ---
 
 <!-- LANGUAGE: This document MUST be written entirely in English (proper nouns keep native spelling). -->
