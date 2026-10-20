@@ -229,3 +229,8 @@ uv.lock
 templates/.compiled
 # parrot LLM-wiki state (local retrieval plane)
 .parrot/
+
+.agents/
+.mcp.json
+agents/
+plugins/
