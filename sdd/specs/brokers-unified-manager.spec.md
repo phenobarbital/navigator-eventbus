@@ -13,8 +13,8 @@ base_branch: main
 **Feature ID**: FEAT-431
 **Date**: 2026-08-06
 **Author**: Jesus Lara
-**Status**: draft
-**Target version**: next minor after 0.2.3 (bump `src/navigator_eventbus/version.py`)
+**Status**: approved
+**Target version**: 0.4.0 — next minor after the current 0.3.0 (bump `src/navigator_eventbus/version.py`)
 
 > **Downstream driver**: this feature unblocks the `nav-rewards` migration
 > (`nav-rewards@sdd/specs/eventbus-migration.spec.md`, FEAT-002), which cannot
@@ -361,6 +361,17 @@ class RabbitMQConnection(BaseConnection):
 | `test_manager_roundtrip_redis` | Same for Redis Streams (marked `redis`) |
 | `test_exchange_binding_roundtrip` | Queue name ≠ exchange name; message published to the exchange reaches the consumer — end-to-end regression for D1 |
 
+### Validation Contract
+- `tests/brokers/test_producer.py`
+- `tests/brokers/test_consumer_fixes.py`
+- `tests/brokers/test_rabbitmq_settlement.py`
+- `tests/brokers/test_manager.py`
+- `tests/brokers/test_rmq_manager.py`
+- `tests/brokers/test_redis_manager.py`
+- `tests/brokers/test_sqs_manager.py`
+- `tests/brokers/test_rabbitmq.py`
+- `tests/brokers/test_hook_rewire.py`
+
 ### Test Data / Fixtures
 
 ```python
@@ -581,10 +592,10 @@ No new runtime dependencies. Existing optional extras (`rabbitmq` → `aiormq`,
       helper** that wires publish-side and consume-side to different
       exchanges/queues, or is a single subscription per manager enough for now?
       — *Owner: Jesus Lara*
-- [ ] **Q2 — Do Redis and SQS managers ship in this cycle or follow later?**
+- [x] **Q2 — Do Redis and SQS managers ship in this cycle or follow later?**
       Only the RabbitMQ one is required by FEAT-002. Shipping all three proves
       the abstraction is genuinely generic but widens the test surface.
-      — *Owner: Jesus Lara*
+      — *Owner: Jesus Lara* — **Resolved 2026-10-21: all three ship in this cycle.**
 - [ ] **Q3 — Is Module 5 a patch or a minor bump?** It changes what
       `event_subscribe()` hands to user callbacks. Semantically a bug fix, but
       observable. — *Owner: Jesus Lara*
@@ -600,3 +611,4 @@ No new runtime dependencies. Existing optional extras (`rabbitmq` → `aiormq`,
 |---|---|---|---|
 | 0.1 | 2026-08-06 | Jesus Lara | Initial draft. Derived from the `nav-rewards` migration proposal (`nav-rewards@sdd/proposals/eventbus-migration.md`, Plan A) and from an MRO/init-chain audit of the `brokers` subpackage |
 | 0.2 | 2026-10-21 | Codex | Specify consumer teardown, single-owner hook settlement, and preservation of the Redis manager registration key, with regression tests and acceptance criteria |
+| 0.3 | 2026-10-21 | Jesus Lara | Approved. Q2 resolved (all three managers ship); target version set to 0.4.0 (`version.py` is already 0.3.0); §4 Validation Contract added |
