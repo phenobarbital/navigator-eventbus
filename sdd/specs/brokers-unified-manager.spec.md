@@ -3,7 +3,7 @@
 # - type: feature  (default)  → base_branch: main (this project uses main)
 # - type: hotfix              → base_branch MUST be: main
 type: feature
-base_branch: main
+base_branch: dev
 ---
 
 <!-- LANGUAGE: This document MUST be written entirely in English (proper nouns keep native spelling). -->
