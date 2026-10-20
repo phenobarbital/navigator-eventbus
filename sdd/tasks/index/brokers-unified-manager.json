@@ -104,7 +104,7 @@
       "feature_id": "FEAT-431",
       "feature": "brokers-unified-manager",
       "spec": "sdd/specs/brokers-unified-manager.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [],
@@ -112,8 +112,9 @@
       "parallelism_notes": "No dependencies: creates brokers/manager.py and edits brokers/__init__.py; subclasses the existing BrokerProducer unchanged by TASK-4561's additive kwarg.",
       "assigned_to": null,
       "started_at": "2026-10-20T23:28:46+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4564-broker-manager-base.md"
+      "completed_at": "2026-10-20T23:38:42+00:00",
+      "file": "sdd/tasks/completed/TASK-4564-broker-manager-base.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4565",
