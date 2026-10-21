@@ -152,9 +152,7 @@ async def test_forward_failure_is_logged(caplog) -> None:
     registry = EventRegistry(forward_to_global=False)
     registry.attach_bus(_FullBus())
     registry.subscribe(_Ev, handler, forward_to_bus=True)
-    event = _Ev(
-        trace_context=TraceContext.new_root(), source_type="t", source_name="n"
-    )
+    event = _Ev(trace_context=TraceContext.new_root(), source_type="t", source_name="n")
     with caplog.at_level("ERROR"):
         await registry.emit(event)
         await asyncio.sleep(0.05)

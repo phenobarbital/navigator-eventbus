@@ -49,6 +49,7 @@ E = TypeVar("E", bound=LifecycleEvent)
 #: Turns a lifecycle event into the bus payload; returning ``None`` skips the publish.
 BusSerializer = Callable[[LifecycleEvent], Optional[dict[str, Any]]]
 
+
 def _log_forward_failure(task: "asyncio.Task[Any]") -> None:
     """Log a failed dual-emit task (retrieves the exception exactly once)."""
     if task.cancelled():
@@ -100,6 +101,7 @@ class _Subscription:
     forward_to_bus: bool
     order: int
     bus_serializer: "Optional[BusSerializer]" = None
+
 
 # ---------------------------------------------------------------------------
 # EventRegistry
@@ -270,7 +272,9 @@ class EventRegistry:
         """
         for s in self._subscriptions:
             try:
-                if issubclass(event_type, s.event_type) or issubclass(s.event_type, event_type):
+                if issubclass(event_type, s.event_type) or issubclass(
+                    s.event_type, event_type
+                ):
                     return True
             except TypeError:
                 continue
@@ -323,9 +327,9 @@ class EventRegistry:
         """
         # Find matching subscriptions
         matching = [
-            s for s in self._subscriptions
-            if isinstance(event, s.event_type)
-            and (s.where is None or s.where(event))
+            s
+            for s in self._subscriptions
+            if isinstance(event, s.event_type) and (s.where is None or s.where(event))
         ]
 
         if not matching:
@@ -445,6 +449,7 @@ class EventRegistry:
                 "Failed to schedule SubscriberErrorEvent for failed subscriber %s",
                 repr(sub.callback),
             )
+
     def emit_nowait(self, event: LifecycleEvent) -> None:
         """Schedule :meth:`emit` on the running event loop, or drop silently.
 

@@ -28,6 +28,7 @@ New ADDITIVE-ONLY kwargs: ``severity=`` on ``publish``/``emit`` and
 - ``BUS_DRAIN_TIMEOUT`` (default 5.0 s)
 - ``BUS_CHANNEL_PREFIX`` (default ``evb:events:`` — FEAT-312 neutral knob)
 """
+
 import asyncio
 import os
 import uuid
@@ -50,6 +51,7 @@ if TYPE_CHECKING:  # imported lazily at runtime to avoid a circular import
 #: constructor kwarg or the ``BUS_CHANNEL_PREFIX`` navconfig key).
 DEFAULT_CHANNEL_PREFIX = "evb:events:"
 
+
 class EventPriority(Enum):
     """Priority levels for events in the event bus."""
 
@@ -62,15 +64,14 @@ class EventPriority(Enum):
 @dataclass
 class Event:
     """Represents an event on the bus."""
-    event_type: str                              # "order.created", "agent.completed"
+
+    event_type: str  # "order.created", "agent.completed"
     payload: Dict[str, Any]
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-    source: Optional[str] = None                 # Who emitted the event
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    source: Optional[str] = None  # Who emitted the event
     priority: EventPriority = EventPriority.NORMAL
-    correlation_id: Optional[str] = None         # Chain-tracking id
+    correlation_id: Optional[str] = None  # Chain-tracking id
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -82,7 +83,7 @@ class Event:
             "source": self.source,
             "priority": self.priority.value,
             "correlation_id": self.correlation_id,
-            "metadata": self.metadata
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -99,17 +100,18 @@ class Event:
             source=data.get("source"),
             priority=EventPriority(data.get("priority", 5)),
             correlation_id=data.get("correlation_id"),
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
         )
 
 
 @dataclass
 class EventSubscription:
     """Subscription to an event pattern."""
-    pattern: str                                 # "order.*", "agent.completed"
+
+    pattern: str  # "order.*", "agent.completed"
     handler: Callable[[Event], Any]
     subscriber_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    priority: int = 0                            # Execution order
+    priority: int = 0  # Execution order
     filter_fn: Optional[Callable[[Event], bool]] = None
     async_handler: bool = True
 
@@ -302,6 +304,7 @@ class EventBus:
                 overflow=overflow,
             )
         return outbox
+
     @property
     def core(self) -> "BusCore":
         """Public accessor to the underlying :class:`BusCore`.
@@ -311,6 +314,7 @@ class EventBus:
             alerter.attach(event_bus.core)
         """
         return self._core
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -389,8 +393,10 @@ class EventBus:
                 await handler(_envelope_to_event(envelope))
 
         else:
+
             def wrapped_handler(envelope: "EventEnvelope") -> None:  # type: ignore[misc]
                 handler(_envelope_to_event(envelope))
+
         return self._core.subscribe(
             pattern,
             wrapped_handler,
@@ -441,18 +447,14 @@ class EventBus:
 
         self.logger.debug(
             "Published event %s, %d subscribers matched",
-            event.event_type, matches,
+            event.event_type,
+            matches,
         )
         return matches
 
     # === Convenience methods ===
 
-    async def emit(
-        self,
-        event_type: str,
-        payload: Dict[str, Any],
-        **kwargs
-    ) -> int:
+    async def emit(self, event_type: str, payload: Dict[str, Any], **kwargs) -> int:
         """Shortcut to publish events.
 
         Accepts every legacy ``Event`` kwarg (``source=``, ``priority=``,
@@ -460,11 +462,7 @@ class EventBus:
         ``severity=`` kwarg (FEAT-310).
         """
         severity = kwargs.pop("severity", None)
-        event = Event(
-            event_type=event_type,
-            payload=payload,
-            **kwargs
-        )
+        event = Event(event_type=event_type, payload=payload, **kwargs)
         return await self.publish(event, severity=severity)
 
     def on(self, pattern: str, **kwargs):

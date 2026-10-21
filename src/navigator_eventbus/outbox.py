@@ -259,9 +259,7 @@ class SqliteOutbox:
 
     async def nack(self, event_id: str, *, error: str, next_try_at: float) -> None:
         """Record a failed attempt and when to retry."""
-        await self._run(
-            self._locked, self._sync_nack, event_id, error, next_try_at
-        )
+        await self._run(self._locked, self._sync_nack, event_id, error, next_try_at)
 
     async def due(self, *, now: float, limit: int) -> list[EventEnvelope]:
         """Purge expired rows, then return up to *limit* rows due at *now*, oldest first."""
