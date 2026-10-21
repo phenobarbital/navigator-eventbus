@@ -21,7 +21,6 @@ with:
   emitter; they surface as ``bus.subscriber_error`` meta-events guarded
   against recursion by a ``contextvars.ContextVar``.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -187,6 +186,7 @@ class BusCore:
             "outbox_acked": 0,
             "outbox_retried": 0,
             "outbox_rejected": 0,
+            "outbox_append_failed": 0,
             "backend_failures": 0,
         }
         # event_ids fanned out to the backend — used to drop the loopback
@@ -198,7 +198,8 @@ class BusCore:
             EventPriority, key=lambda p: p.value, reverse=True
         )
         self._queues: dict[EventPriority, asyncio.Queue[EventEnvelope]] = {
-            prio: asyncio.Queue(maxsize=queue_size) for prio in self._priority_order
+            prio: asyncio.Queue(maxsize=queue_size)
+            for prio in self._priority_order
         }
         # Counts enqueued items; workers block here when idle. Workers are
         # spurious-wakeup tolerant (drop_oldest can skew the count by design).
@@ -270,9 +271,7 @@ class BusCore:
             self.logger.error(
                 "BusCore drain deadline (%.1fs) exceeded; %d envelopes "
                 "abandoned (dropped_on_close=%d)",
-                deadline,
-                pending,
-                self.dropped_on_close,
+                deadline, pending, self.dropped_on_close,
             )
             # Best-effort observability signal — may itself go undispatched
             # (workers are being torn down), but monitoring backends that
@@ -314,7 +313,10 @@ class BusCore:
 
     async def _drain(self) -> None:
         """Wait until all queues are empty and no dispatch is in flight."""
-        while any(not q.empty() for q in self._queues.values()) or self._in_flight > 0:
+        while (
+            any(not q.empty() for q in self._queues.values())
+            or self._in_flight > 0
+        ):
             await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
@@ -334,7 +336,9 @@ class BusCore:
             OutboxFullError: If the durable outbox rejects the envelope.
         """
         if self._closing:
-            raise BusClosedError("BusCore is closing — publish() rejected")
+            raise BusClosedError(
+                "BusCore is closing — publish() rejected"
+            )
         # Fan out to the transport backend BEFORE the (possibly blocking)
         # local enqueue — fire-and-forget, never delays local dispatch.
         if self._backend is not None:
@@ -350,6 +354,7 @@ class BusCore:
                     )
                     raise
                 except Exception:  # noqa: BLE001 — publish continues degraded
+                    self._stats["outbox_append_failed"] += 1
                     self.logger.exception(
                         "Outbox append failed for %s (%s); publishing without durability",
                         envelope.topic,
@@ -380,8 +385,7 @@ class BusCore:
                     dropped = queue.get_nowait()
                     self.logger.warning(
                         "Backpressure drop_oldest: dropped %s (%s)",
-                        dropped.topic,
-                        dropped.event_id,
+                        dropped.topic, dropped.event_id,
                     )
                 except asyncio.QueueEmpty:  # drained meanwhile
                     pass
@@ -400,8 +404,12 @@ class BusCore:
         queue.put_nowait(envelope)
         self._items.release()
 
-    async def _backend_publish(self, envelope: EventEnvelope) -> None:
-        """Fan *envelope* out to the transport backend; ack/nack the outbox row."""
+    async def _backend_publish(self, envelope: EventEnvelope) -> bool:
+        """Fan *envelope* out to the transport backend; ack/nack the outbox row.
+
+        Returns:
+            ``True`` when the backend confirmed the publish, ``False`` otherwise.
+        """
         try:
             await self._backend.publish(envelope)  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001 — degraded mode, local OK
@@ -414,8 +422,10 @@ class BusCore:
                 exc,
             )
             await self._outbox_nack(envelope, exc)
+            return False
         else:
             await self._outbox_ack(envelope)
+            return True
         finally:
             self._outbox_inflight.discard(envelope.event_id)
 
@@ -457,8 +467,7 @@ class BusCore:
         except Exception:  # noqa: BLE001 — durability failures are isolated
             self.logger.exception(
                 "Outbox nack failed for %s (%s)",
-                envelope.topic,
-                envelope.event_id,
+                envelope.topic, envelope.event_id,
             )
 
     async def _relay_once(self) -> None:
@@ -473,12 +482,23 @@ class BusCore:
                 self._outbox_inflight.add(envelope.event_id)
                 self._remember_fanout(envelope.event_id)
                 self._stats["outbox_retried"] += 1
-                await self._backend_publish(envelope)
+                if not await self._backend_publish(envelope):
+                    # Circuit-breaker: the backend is down, so do not burn one
+                    # client timeout per remaining row. They stay due and are
+                    # picked up on the next pass.
+                    self.logger.warning(
+                        "Outbox relay pass aborted after a backend failure"
+                    )
+                    break
         except Exception:  # noqa: BLE001 — relay failures are isolated
             self.logger.exception("Outbox relay pass failed")
         finally:
             try:
-                self._stats["outbox_pending"] = (await self._outbox.stats())["pending"]
+                pending = (await self._outbox.stats())["pending"]
+                self._stats["outbox_pending"] = pending
+                if pending == 0:
+                    # Rows purged/dropped by the store never reach an ack.
+                    self._outbox_attempts.clear()
             except Exception:  # noqa: BLE001 — stats refresh is best effort
                 self.logger.exception("Outbox stats refresh failed")
 
@@ -490,7 +510,13 @@ class BusCore:
             await self._relay_once()
 
     def stats(self) -> dict[str, int]:
-        """Return cached outbox and transport counters."""
+        """Return outbox and transport counters.
+
+        ``outbox_pending`` is a cached value refreshed once per relay pass (every
+        ``relay_interval`` seconds), so it may lag the store; the other counters
+        are live. ``outbox_append_failed`` counts envelopes published without
+        durability because the outbox itself failed (e.g. disk full).
+        """
         return dict(self._stats)
 
     async def _stop_relay(self, deadline: float) -> None:
@@ -700,8 +726,7 @@ class BusCore:
                 except Exception:  # noqa: BLE001 — filter errors are isolated
                     self.logger.exception(
                         "filter_fn raised for subscriber %s on %s",
-                        sub.subscriber_id,
-                        envelope.topic,
+                        sub.subscriber_id, envelope.topic,
                     )
                     continue
                 await self._invoke_with_retry(sub, envelope)
@@ -743,14 +768,13 @@ class BusCore:
                 last_exc = exc
                 self.logger.warning(
                     "Handler %s failed on %s (attempt %d/%d): %s",
-                    sub.subscriber_id,
-                    envelope.topic,
-                    attempt,
-                    self._retry_attempts,
-                    exc,
+                    sub.subscriber_id, envelope.topic,
+                    attempt, self._retry_attempts, exc,
                 )
                 if attempt < self._retry_attempts:
-                    await asyncio.sleep(self._retry_base_delay * (2 ** (attempt - 1)))
+                    await asyncio.sleep(
+                        self._retry_base_delay * (2 ** (attempt - 1))
+                    )
         # Retries exhausted.
         assert last_exc is not None
         self._emit_subscriber_error(envelope, sub, last_exc)
@@ -799,8 +823,7 @@ class BusCore:
         if _in_meta_dispatch.get():
             self.logger.error(
                 "Recursion guard triggered: dropping nested "
-                "bus.subscriber_error for %s",
-                envelope.topic,
+                "bus.subscriber_error for %s", envelope.topic,
             )
             return
         self._publish_meta(
@@ -816,7 +839,9 @@ class BusCore:
             },
         )
 
-    def _emit_backpressure_meta(self, envelope: EventEnvelope, policy: str) -> None:
+    def _emit_backpressure_meta(
+        self, envelope: EventEnvelope, policy: str
+    ) -> None:
         """Enqueue a ``bus.backpressure`` meta-event (best-effort)."""
         if _in_meta_dispatch.get():
             return

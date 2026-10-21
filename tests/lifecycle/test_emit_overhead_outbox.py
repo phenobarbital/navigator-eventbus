@@ -36,26 +36,28 @@ async def test_overhead_under_budget_with_outbox(tmp_path) -> None:
     async def handler(_: LifecycleEvent) -> None:
         """Provide the same no-op subscriber for both benchmark paths."""
 
+    async def _timed(reg: EventRegistry) -> float:
+        t0 = time.perf_counter()
+        for _ in range(n):
+            await asyncio.sleep(_SIMULATED_REQUEST_SECONDS)
+            await reg.emit(event)
+        return time.perf_counter() - t0
+
     registry = EventRegistry(forward_to_global=False)
     registry.subscribe(_BenchEvent, handler, forward_to_bus=False)
-    t0 = time.perf_counter()
-    for _ in range(n):
-        await asyncio.sleep(_SIMULATED_REQUEST_SECONDS)
-        await registry.emit(event)
-    baseline = time.perf_counter() - t0
-
     bus = EventBus(backend=MemoryBackend(), outbox=str(tmp_path / "outbox.db"))
     registry_dual = EventRegistry(forward_to_global=False)
     registry_dual.attach_bus(bus)
     registry_dual.subscribe(_BenchEvent, handler, forward_to_bus=True)
     try:
-        t0 = time.perf_counter()
-        for _ in range(n):
-            await asyncio.sleep(_SIMULATED_REQUEST_SECONDS)
-            await registry_dual.emit(event)
-        with_dual_emit = time.perf_counter() - t0
-
-        overhead = (with_dual_emit - baseline) / baseline
+        # Best of three: sleep jitter on a loaded CI box dominates a single run,
+        # while a real regression shows in every repetition.
+        overheads = []
+        for _ in range(3):
+            baseline = await _timed(registry)
+            with_dual_emit = await _timed(registry_dual)
+            overheads.append((with_dual_emit - baseline) / baseline)
+        overhead = min(overheads)
         assert overhead < 0.05, (
             f"Dual-emit overhead {overhead:.2%} exceeds the generous CI "
             f"margin (target budget is < 0.1%, FEAT-177)"

@@ -144,6 +144,7 @@ async def test_no_outbox_behavior_unchanged() -> None:
         "outbox_acked": 0,
         "outbox_retried": 0,
         "outbox_rejected": 0,
+        "outbox_append_failed": 0,
         "backend_failures": 0,
     }
     await core.close()

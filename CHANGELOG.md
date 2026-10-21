@@ -14,6 +14,12 @@ Ships FEAT-711 (durable lifecycle fan-out).
 - `OutboxStore`, `SqliteOutbox`, and `OutboxFullError`.
 - `BusCore(outbox=, publish_only=, relay_*)` configuration and `BusCore.stats()`.
 
+### Hardening
+
+- `SqliteOutbox` takes an exclusive file lock (`OutboxLockedError`), runs on a dedicated worker thread, and counts undecodable rows as `corrupt`.
+- The relay pass aborts on the first backend failure; `BusCore.stats()` gains `outbox_append_failed`.
+- `BUS_TRANSPORT` is case-insensitive; `BUS_OUTBOX_MAX_AGE` added; lifecycle bus-forward failures are logged.
+
 ### Delivery contract
 
 - With an outbox configured, delivery from `emit` to a Streams consumer is **at-least-once**;

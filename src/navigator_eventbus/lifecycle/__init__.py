@@ -19,7 +19,7 @@ from navigator_eventbus.lifecycle.global_registry import get_global_registry, sc
 from navigator_eventbus.lifecycle.meta import SubscriberErrorEvent
 from navigator_eventbus.lifecycle.mixin import EventEmitterMixin, set_bootstrap_hook
 from navigator_eventbus.lifecycle.provider import EventProvider
-from navigator_eventbus.lifecycle.registry import AsyncSubscriber, EventRegistry
+from navigator_eventbus.lifecycle.registry import AsyncSubscriber, BusSerializer, EventRegistry
 from navigator_eventbus.lifecycle.subscribers import LoggingSubscriber, WebhookSubscriber
 from navigator_eventbus.lifecycle.trace import TraceContext
 from navigator_eventbus.lifecycle.yaml_loader import register_event_names, wire_events
@@ -33,6 +33,7 @@ __all__ = [
     # Registry + dispatch
     "EventRegistry",
     "AsyncSubscriber",
+    "BusSerializer",
     "get_global_registry",
     "scope",
     # Provider + mixin

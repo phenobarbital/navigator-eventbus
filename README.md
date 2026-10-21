@@ -192,13 +192,14 @@ constructor kwarg where noted.
 | `BUS_OUTBOX_PATH` | `outbox=` (on `EventBus`) | unset | SQLite outbox file — enables the durable producer outbox |
 | `BUS_OUTBOX_MAX_ROWS` | `max_rows=` (on `SqliteOutbox`) | `1000000` | Row cap |
 | `BUS_OUTBOX_OVERFLOW` | `overflow=` (on `SqliteOutbox`) | `"reject_new"` | `reject_new` \| `drop_oldest` |
+| `BUS_OUTBOX_MAX_AGE` | `max_age=` (on `SqliteOutbox`) | `604800` | Seconds before an unsent row expires |
 | `BUS_OUTBOX_RELAY_INTERVAL` | `relay_interval=` | `5.0` (s) | Relay retry loop period |
 | `BUS_CHANNEL_PREFIX` | `channel_prefix=` (on `EventBus`) | `"evb:events:"` | Redis pub/sub channel prefix — **see warning above** |
 
 #### Durable producer outbox
 
 Use a persistent per-instance volume for the SQLite outbox; ephemeral container disk defeats restart recovery.
-Each process or worker must use its own outbox file—never share one file between gunicorn workers.
+Each process or worker must use its own outbox file—never share one file between gunicorn workers. The store takes an exclusive lock on `<path>.lock`, so a second store on the same file raises `OutboxLockedError`. Its `expired`/`dropped`/`rejected`/`corrupt` counters are per-process and reset on restart (each occurrence is also logged at ERROR); `BusCore.stats()` adds `outbox_append_failed` for envelopes published without durability.
 There is a residual window between a lifecycle emit and the scheduled `bus.emit` task, so a process crash can still lose that event.
 Duplicates are expected after an unconfirmed publish; consumers must deduplicate by `event_id`.
 There is no global ordering across workers; order by event timestamp when needed.

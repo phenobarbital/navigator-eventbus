@@ -49,6 +49,20 @@ E = TypeVar("E", bound=LifecycleEvent)
 #: Turns a lifecycle event into the bus payload; returning ``None`` skips the publish.
 BusSerializer = Callable[[LifecycleEvent], Optional[dict[str, Any]]]
 
+def _log_forward_failure(task: "asyncio.Task[Any]") -> None:
+    """Log a failed dual-emit task (retrieves the exception exactly once)."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Bus forward %s failed: %s: %s",
+            task.get_name(),
+            type(exc).__name__,
+            exc,
+        )
+
+
 # ContextVar used as recursion guard: True while _emit_meta() is running so
 # that a failing SubscriberErrorEvent subscriber does not spawn another
 # SubscriberErrorEvent and loop infinitely.
@@ -57,7 +71,6 @@ _emitting_meta: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 logger = logging.getLogger("navigator_eventbus.lifecycle.registry")
-
 
 # ---------------------------------------------------------------------------
 # Internal subscription record
@@ -87,7 +100,6 @@ class _Subscription:
     forward_to_bus: bool
     order: int
     bus_serializer: "Optional[BusSerializer]" = None
-
 
 # ---------------------------------------------------------------------------
 # EventRegistry
@@ -258,9 +270,7 @@ class EventRegistry:
         """
         for s in self._subscriptions:
             try:
-                if issubclass(event_type, s.event_type) or issubclass(
-                    s.event_type, event_type
-                ):
+                if issubclass(event_type, s.event_type) or issubclass(s.event_type, event_type):
                     return True
             except TypeError:
                 continue
@@ -313,9 +323,9 @@ class EventRegistry:
         """
         # Find matching subscriptions
         matching = [
-            s
-            for s in self._subscriptions
-            if isinstance(event, s.event_type) and (s.where is None or s.where(event))
+            s for s in self._subscriptions
+            if isinstance(event, s.event_type)
+            and (s.where is None or s.where(event))
         ]
 
         if not matching:
@@ -344,24 +354,24 @@ class EventRegistry:
             # Per-subscriber dual-emit to EventBus (fire-and-forget, FEAT-177 TASK-1227).
             # A slow bus must never block the agent request path — the §5 performance
             # budget (< 0.1% LLM-latency overhead) is unenforceable otherwise.
-            # Asyncio's default task-exception handler logs unhandled exceptions raised
-            # inside ``_event_bus.emit``; we do not attach an explicit done-callback.
+            # A done-callback logs failures of ``_event_bus.emit`` deterministically
+            # (e.g. ``OutboxFullError``) instead of relying on GC-time reporting.
             if sub.forward_to_bus and self._event_bus is not None:
                 payload = self._bus_payload(sub, event)
                 if payload is None:
                     continue
                 channel = f"{self._bus_channel_prefix}.{cls_name}"
                 try:
-                    asyncio.create_task(
+                    task = asyncio.create_task(
                         self._event_bus.emit(channel, payload),
                         name=f"lifecycle.bus.{cls_name}",
                     )
+                    task.add_done_callback(_log_forward_failure)
                 except RuntimeError:
                     # No running loop at scheduling time — log and continue.
                     logger.exception(
                         "Dual-emit scheduling failed for channel %s", channel
                     )
-
         # Forward to global registry (if enabled and not already the global)
         if self._forward_to_global:
             self._forward_to_global_safely(event)
@@ -435,7 +445,6 @@ class EventRegistry:
                 "Failed to schedule SubscriberErrorEvent for failed subscriber %s",
                 repr(sub.callback),
             )
-
     def emit_nowait(self, event: LifecycleEvent) -> None:
         """Schedule :meth:`emit` on the running event loop, or drop silently.
 

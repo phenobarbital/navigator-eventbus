@@ -13,7 +13,6 @@ lifecycle event machinery (`EventRegistry`, `EventEmitterMixin`, generic
 subscribers, etc.), independent of the bus core above. See
 `sdd/specs/eventbus-lifecycle-extraction.spec.md`.
 """
-
 from navigator_eventbus import lifecycle
 from navigator_eventbus.backends.composite import CompositeBackend
 from navigator_eventbus.core import BackpressureError, BusClosedError, BusCore
