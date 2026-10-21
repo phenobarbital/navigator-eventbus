@@ -72,7 +72,7 @@ class EmployeeEventsBridge(RMQConsumer):
         *,
         dedup_ttl: int = MQTT_EVENT_DEDUP_TTL,
         dedup_redis_url: str = MQTT_EVENT_DEDUP_REDIS_URL,
-        accepted_schema_versions: set = None,
+        accepted_schema_versions: Optional[set] = None,
         max_batch_size: int = MQTT_MAX_BATCH_SIZE,
         enforce_employee_id: bool = MQTT_ENFORCE_EMPLOYEE_ID_CONSISTENCY,
         employee_events_exchange: str = EMPLOYEE_EVENTS_EXCHANGE,

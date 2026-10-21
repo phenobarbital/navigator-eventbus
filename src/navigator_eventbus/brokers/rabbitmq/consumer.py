@@ -7,12 +7,13 @@ API name is preserved as-is — no public API break).
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Optional, Union
 
 import aiormq
 from aiohttp import web
 from navconfig.logging import logging
 
+from ..connection import MessageCallback
 from ..consumer import BrokerConsumer
 from .connection import RabbitMQConnection
 
@@ -29,7 +30,7 @@ class RMQConsumer(RabbitMQConnection, BrokerConsumer):
         self,
         credentials: Optional[Union[str, dict]] = None,
         timeout: Optional[int] = 5,
-        callback: Optional[Union[Awaitable, Callable]] = None,
+        callback: Optional[MessageCallback] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the RabbitMQ consumer.
@@ -75,7 +76,7 @@ class RMQConsumer(RabbitMQConnection, BrokerConsumer):
     async def event_subscribe(
         self,
         queue_name: str,
-        callback: Union[Callable, Awaitable],
+        callback: MessageCallback,
     ) -> None:
         """Subscribe to a queue and consume messages via *callback*."""
         await self.consume_messages(queue_name=queue_name, callback=callback)
@@ -85,7 +86,7 @@ class RMQConsumer(RabbitMQConnection, BrokerConsumer):
         exchange: str,
         queue_name: str,
         routing_key: str,
-        callback: Union[Callable, Awaitable],
+        callback: MessageCallback,
         exchange_type: str = "topic",
         durable: bool = True,
         prefetch_count: int = 1,
@@ -97,21 +98,22 @@ class RMQConsumer(RabbitMQConnection, BrokerConsumer):
         # Declare the queue
         await self.ensure_connection()
         try:
+            channel = self._require_channel()
             await self.ensure_exchange(
                 exchange_name=exchange, exchange_type=exchange_type
             )
-            await self._channel.queue_declare(queue=queue_name, durable=durable)
+            await channel.queue_declare(queue=queue_name, durable=durable)
 
             # Bind the queue to the exchange
-            await self._channel.queue_bind(
+            await channel.queue_bind(
                 queue=queue_name, exchange=exchange, routing_key=routing_key
             )
 
             # Set QoS (Quality of Service) settings
-            await self._channel.basic_qos(prefetch_count=prefetch_count)
+            await channel.basic_qos(prefetch_count=prefetch_count)
 
             # Start consuming messages from the queue
-            consume_ok = await self._channel.basic_consume(
+            consume_ok = await channel.basic_consume(
                 queue=queue_name,
                 consumer_callback=self.wrap_callback(
                     callback,

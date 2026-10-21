@@ -6,9 +6,11 @@ source.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Awaitable, Callable, Optional
 
 from navconfig.logging import logging
+
+from .connection import MessageCallback
 
 
 class BrokerConsumer(ABC):
@@ -18,7 +20,7 @@ class BrokerConsumer(ABC):
 
     def __init__(
         self,
-        callback: Optional[Union[Awaitable, Callable]] = None,
+        callback: Optional[MessageCallback] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the consumer.
@@ -37,7 +39,7 @@ class BrokerConsumer(ABC):
     async def event_subscribe(
         self,
         queue_name: str,
-        callback: Union[Callable, Awaitable],
+        callback: MessageCallback,
     ) -> None:
         """Subscribe to a Queue and consume messages."""
 
@@ -48,8 +50,8 @@ class BrokerConsumer(ABC):
     @abstractmethod
     def wrap_callback(
         self,
-        callback: Callable[[Any, str], Awaitable[None]],
+        callback: MessageCallback,
         requeue_on_fail: bool = False,
         max_retries: int = 3,
-    ) -> Callable:
+    ) -> Callable[..., Awaitable[None]]:
         """Wrap the user-provided callback to handle decoding and ack."""

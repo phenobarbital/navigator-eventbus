@@ -142,7 +142,7 @@ class BrokerProducer(BaseConnection, ABC):
 
     async def queue_event(
         self,
-        body: str,
+        body: Any,
         queue_name: str,
         routing_key: Optional[str] = None,
         **kwargs: Any,
@@ -167,7 +167,7 @@ class BrokerProducer(BaseConnection, ABC):
 
     async def publish_event(
         self,
-        body: str,
+        body: Any,
         queue_name: str,
         **kwargs: Any,
     ) -> None:

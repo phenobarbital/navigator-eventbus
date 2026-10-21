@@ -9,11 +9,12 @@ tag and lets in-flight deliveries finish before the outgoing queue drains.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable, Coroutine
 
 from aiohttp import web
 from navconfig.logging import logging
 
+from ..connection import MessageCallback
 from ..manager import BrokerManager
 from .consumer import RMQConsumer
 
@@ -40,10 +41,10 @@ class RMQManager(BrokerManager, RMQConsumer):
 
     def wrap_callback(
         self,
-        callback: Callable[[Any, str], Awaitable[None]],
+        callback: MessageCallback,
         requeue_on_fail: bool = False,
         max_retries: int = 3,
-    ) -> Callable:
+    ) -> Callable[[Any], Coroutine[Any, Any, None]]:
         """Wrap like :class:`RabbitMQConnection` and track the delivery as in-flight."""
         inner = super().wrap_callback(
             callback, requeue_on_fail=requeue_on_fail, max_retries=max_retries
