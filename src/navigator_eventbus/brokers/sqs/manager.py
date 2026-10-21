@@ -53,7 +53,13 @@ class SQSManager(BrokerManager, SQSConsumer):
         )
 
     async def _stop_consuming(self) -> None:
-        """Cancel and await every consumer task; tolerate none."""
+        """Cancel and await every consumer task; tolerate none.
+
+        Cancellation can land while a handler is still running. That message
+        is never deleted from the queue, so SQS makes it visible again after
+        its visibility timeout and redelivers it — handlers must be
+        idempotent.
+        """
         tasks, self._consumer_tasks = self._consumer_tasks, []
         for task in tasks:
             task.cancel()
