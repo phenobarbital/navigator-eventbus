@@ -1,5 +1,7 @@
 """Unit tests for navigator_eventbus.brokers.rabbitmq (TASK-1816, FEAT-316)."""
+
 import inspect
+import os
 
 from navigator_eventbus.brokers.rabbitmq import RabbitMQConnection
 
@@ -12,7 +14,15 @@ def test_rabbitmq_connection_dsn_navconfig(monkeypatch):
     # computed once at import time; the builder itself reads live env vars).
     import importlib
 
+    from navconfig import config
+
     import navigator_eventbus.brokers._conf as conf_module
+
+    # Pin navconfig to os.environ: it may otherwise resolve these keys from
+    # its own sources (.env, INI) and ignore the monkeypatched values.
+    monkeypatch.setattr(
+        config, "get", lambda key, *a, **kw: os.environ.get(key, kw.get("fallback"))
+    )
 
     importlib.reload(conf_module)
     assert "mq.example.com" in conf_module.rabbitmq_dsn

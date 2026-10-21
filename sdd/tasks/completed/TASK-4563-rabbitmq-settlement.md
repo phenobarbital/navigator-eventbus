@@ -387,10 +387,8 @@ See the blueprint test file. It covers spec §4 rows `test_ensure_queue_declares
 
 ## Completion Note
 
-*(Agent fills this in when done)*
-
-**Completed by**:
-**Date**:
-**Notes**:
+**Completed by**: gpt-5.6-terra (codex)
+**Date**: 2026-10-21
+**Notes**: Merged. Verified locally with PYTHONPATH=worktree/src: tests/brokers 53 passed; only 2 pre-existing navconfig-env failures (fail on baseline).
 
 **Deviations from spec**: none

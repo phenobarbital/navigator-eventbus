@@ -1,5 +1,7 @@
 """Unit tests for navigator_eventbus.brokers.sqs (TASK-1817, FEAT-316)."""
+
 import inspect
+import os
 
 from navigator_eventbus.brokers.sqs import SQSConnection
 
@@ -9,6 +11,13 @@ def test_sqs_connection_creds_navconfig(monkeypatch):
     monkeypatch.setenv("AWS_KEY", "AKIATEST")
     monkeypatch.setenv("AWS_SECRET", "s3cret")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
+    # navconfig may resolve keys from its own sources (.env, INI) ahead of
+    # os.environ; pin it to the environment so the test is hermetic.
+    from navconfig import config
+
+    monkeypatch.setattr(
+        config, "get", lambda key, *a, **kw: os.environ.get(key, kw.get("fallback"))
+    )
     conn = SQSConnection()
     assert conn._credentials["aws_access_key_id"] == "AKIATEST"
     assert conn._credentials["aws_secret_access_key"] == "s3cret"
@@ -16,7 +25,11 @@ def test_sqs_connection_creds_navconfig(monkeypatch):
 
 
 def test_sqs_connection_explicit_credentials():
-    creds = {"aws_access_key_id": "explicit", "aws_secret_access_key": "x", "region_name": "eu-west-1"}
+    creds = {
+        "aws_access_key_id": "explicit",
+        "aws_secret_access_key": "x",
+        "region_name": "eu-west-1",
+    }
     conn = SQSConnection(credentials=creds)
     assert conn._credentials == creds
 

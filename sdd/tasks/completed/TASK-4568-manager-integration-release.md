@@ -285,10 +285,8 @@ See the blueprint test file (spec §4 "Integration Tests").
 
 ## Completion Note
 
-*(Agent fills this in when done)*
-
-**Completed by**:
-**Date**:
-**Notes**:
+**Completed by**: sonnet (native, after empty delivery on gpt-5.6-terra)
+**Date**: 2026-10-21
+**Notes**: Merged. Version 0.4.0 + CHANGELOG. mypy unrunnable (broken venv binary). Redis integration test skipped (no live Redis). RabbitMQ test leaves queue/exchange on broker. 2 pre-existing navconfig-env failures.
 
 **Deviations from spec**: none
