@@ -54,7 +54,7 @@
       "feature_id": "FEAT-712",
       "feature": "fixgroup-17c252023ef4",
       "spec": "sdd/specs/fixgroup-17c252023ef4.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "medium",
       "effort": "M",
       "depends_on": [],
@@ -62,9 +62,10 @@
       "parallelism_notes": "No dependencies: creates MessageCallback in brokers/connection.py and owns the base files, brokers/rabbitmq/* and hooks/brokers/*; creates tests/brokers/test_typing_guards.py.",
       "assigned_to": "agent:sdd-fix",
       "started_at": "2026-10-21T00:44:09+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4571-brokers-typing-base-rabbitmq.md",
-      "discovered_from": "issue:b12a71083ca3"
+      "completed_at": "2026-10-21T00:48:33+00:00",
+      "file": "sdd/tasks/completed/TASK-4571-brokers-typing-base-rabbitmq.md",
+      "discovered_from": "issue:b12a71083ca3",
+      "verification": "verified"
     },
     {
       "id": "TASK-4572",

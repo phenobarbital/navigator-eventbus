@@ -393,8 +393,25 @@ the behavioural regression net and must pass unchanged.
 
 *(Agent fills this in when done)*
 
-**Completed by**:
-**Date**:
-**Notes**:
+**Completed by**: agent:sdd-fix (Claude Fable 5.1, `/sdd-fix issue:b12a71083ca3`)
+**Date**: 2026-10-21
+**Notes**: Base contracts (`MessageCallback`, `_connection: Any`, `process_message(body)`,
+`queue_event/publish_event(body: Any)`) and the RabbitMQ family are mypy-clean; `hooks/brokers/*`
+typed with a `TYPE_CHECKING` import and a `RuntimeError` guard, all `# type: ignore[attr-defined]`
+on connection calls removed. Validation: ruff clean; mypy 0 errors in the task's files (46 remain,
+all under `redis/` and `sqs/` for TASK-4572); 69 tests pass across the Validation Commands.
 
-**Deviations from spec**: none
+**Deviations from spec**:
+1. `wrap_callback` on `RabbitMQConnection` / `RMQManager` returns
+   `Callable[..., Coroutine[Any, Any, None]]` (not `Awaitable[None]`) because aiormq's
+   `basic_consume` requires a coroutine-returning callback; still a subtype of the base contract.
+2. The sync/async branch `asyncio.iscoroutinefunction(callback)` became
+   `result = callback(...); if inspect.isawaitable(result): await result` — mypy cannot narrow
+   `MessageCallback` through `iscoroutinefunction`; same behaviour for both callback kinds.
+3. `RabbitMQBrokerHook.connect()` reads the DSN from `BrokerHookConfig.credentials["dsn"]`
+   (or uses the navconfig default when credentials is unset) and raises `TypeError` otherwise —
+   the generic config carries a dict while `RabbitMQConnection` only accepts a DSN string.
+4. `RedisBrokerHook.start_consuming()` now calls `consume_messages(queue_name=…, callback=…,
+   consumer_name=…)` and constructs the connection with `queue_name/group_name/consumer_name`:
+   the previous `stream_name=`/missing `queue_name` call was a mypy error (and a latent runtime
+   `TypeError`), so spec §8 item 2 is resolved here instead of a separate issue.
