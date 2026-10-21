@@ -9,6 +9,7 @@ the source (no ``navigator.conf`` involvement) — kept as-is.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from asyncio import Task
 from dataclasses import is_dataclass
 from typing import Any, Awaitable, Callable, Optional, Union
@@ -20,7 +21,7 @@ from navconfig.logging import logging
 
 from navigator_eventbus.serialization import dumps, loads
 
-from ..connection import BaseConnection
+from ..connection import BaseConnection, MessageCallback
 from ..wrapper import BaseWrapper
 
 logging.getLogger("botocore").setLevel(logging.INFO)
@@ -55,8 +56,8 @@ class SQSConnection(BaseConnection):
                 "region_name": config.get("AWS_REGION"),
             }
         super().__init__(credentials=credentials, timeout=timeout, **kwargs)
-        self._connection = None
-        self._session = None
+        self._connection: Any = None
+        self._session: Optional[aioboto3.Session] = None
         self.consumer_task: Optional[Task] = None
 
     async def connect(self) -> None:
@@ -65,10 +66,14 @@ class SQSConnection(BaseConnection):
             return
         try:
             self.logger.info("Connecting to AWS SQS...")
-            self._session = aioboto3.Session()
-            async with self._session.resource(
-                "sqs", **self._credentials
-            ) as sqs_resource:
+            if not isinstance(self._credentials, dict):
+                raise TypeError(
+                    "SQSConnection expects a credentials dict, "
+                    f"got {type(self._credentials).__name__}"
+                )
+            session = aioboto3.Session()
+            self._session = session
+            async with session.resource("sqs", **self._credentials) as sqs_resource:
                 self._connection = sqs_resource
             self.logger.info("Connected to AWS SQS.")
         except Exception as e:
@@ -87,13 +92,23 @@ class SQSConnection(BaseConnection):
         self._session = None
         self.logger.info("Disconnected from AWS SQS.")
 
+    def _require_resource(self) -> Any:
+        """Return the SQS resource.
+
+        Raises:
+            RuntimeError: When :meth:`connect` has not been called.
+        """
+        if self._connection is None:
+            raise RuntimeError("SQS resource is not connected; call connect() first")
+        return self._connection
+
     async def create_queue(
         self, queue_name: str, attributes: Optional[dict] = None
     ) -> Any:
         """Create a queue in AWS SQS."""
         try:
             self.logger.info(f"Creating queue '{queue_name}'...")
-            queue = await self._connection.create_queue(
+            queue = await self._require_resource().create_queue(
                 QueueName=queue_name, Attributes=attributes or {}
             )
             self._queues[queue_name] = queue
@@ -110,13 +125,14 @@ class SQSConnection(BaseConnection):
         if queue_name in self._queues:
             return self._queues[queue_name]
 
+        resource = self._require_resource()
         try:
             self.logger.info(f"Checking if queue '{queue_name}' exists...")
-            queue = await self._connection.get_queue_by_name(QueueName=queue_name)
+            queue = await resource.get_queue_by_name(QueueName=queue_name)
             self._queues[queue_name] = queue
             self.logger.info(f"Queue '{queue_name}' exists.")
             return queue
-        except self._connection.meta.client.exceptions.QueueDoesNotExist:
+        except resource.meta.client.exceptions.QueueDoesNotExist:
             self.logger.warning(f"Queue '{queue_name}' does not exist. Creating it...")
             try:
                 queue = await self.create_queue(queue_name, attributes)
@@ -128,10 +144,16 @@ class SQSConnection(BaseConnection):
     async def publish_message(
         self,
         body: Union[str, list, dict, Any],
-        queue_name: str,
+        queue_name: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
-        """Publish a message to the specified queue."""
+        """Publish a message to the specified queue.
+
+        Raises:
+            ValueError: If *queue_name* is ``None``.
+        """
+        if queue_name is None:
+            raise ValueError("publish_message() requires queue_name")
         try:
             queue = await self.ensure_queue(queue_name)
             message_attributes = kwargs.get("attributes", {})
@@ -189,20 +211,25 @@ class SQSConnection(BaseConnection):
             self.logger.error(f"Failed to publish message to queue '{queue_name}': {e}")
             raise
 
-    async def process_message(self, body: str, attributes: dict) -> Any:
+    async def process_message(self, body: str, attributes: Optional[dict] = None) -> Any:
         """Process (decode) the message received by the consumer.
 
         Decode failures are logged as a warning and the raw body is
         returned — no navigator-specific ``ValidationError`` handling.
+
+        Args:
+            body: The SQS message body (always text).
+            attributes: SQS message attributes; ``None`` means no attributes.
         """
         try:
-            content_type = attributes.get("ContentType", {}).get(
+            content_type = (attributes or {}).get("ContentType", {}).get(
                 "StringValue", "text/plain"
             )
             if content_type == "application/json":
                 return loads(body)
             elif content_type == "application/msgpack":
-                return self._serializer.unpack(body)
+                # SQS bodies are text; msgpack payloads arrive utf-8 encoded.
+                return self._serializer.unpack(body.encode("utf-8"))
             elif content_type == "application/jsonpickle":
                 try:
                     return self._serializer.decode(body)
@@ -224,9 +251,16 @@ class SQSConnection(BaseConnection):
 
     def wrap_callback(
         self,
-        callback: Callable[[dict, str], Awaitable[None]],
+        callback: MessageCallback,
+        requeue_on_fail: bool = False,
+        max_retries: int = 3,
     ) -> Callable[[Any], Awaitable[None]]:
-        """Wrap the user-provided callback for message handling."""
+        """Wrap the user-provided callback for message handling.
+
+        ``requeue_on_fail`` and ``max_retries`` are accepted for interface parity
+        with :class:`~navigator_eventbus.brokers.consumer.BrokerConsumer` and
+        ignored: SQS redelivers an undeleted message after its visibility timeout.
+        """
 
         async def wrapped_callback(message: Any) -> None:
             try:
@@ -237,10 +271,9 @@ class SQSConnection(BaseConnection):
 
                 # Process the message body and pass it to the callback
                 processed_message = await self.process_message(body, attributes)
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(message, processed_message)
-                else:
-                    callback(message, processed_message)
+                result = callback(message, processed_message)
+                if inspect.isawaitable(result):
+                    await result
 
                 # Log message ID and acknowledge (delete) the message
                 self.logger.info(f"Processed Message ID: {message_id}")
@@ -254,12 +287,26 @@ class SQSConnection(BaseConnection):
     async def consume_messages(
         self,
         queue_name: str,
-        callback: Callable[[dict, str], Awaitable[None]],
+        callback: MessageCallback,
         max_messages: int = 10,
         wait_time: int = 10,
         idle_sleep: int = 5,
+        **kwargs: Any,
     ) -> None:
-        """Consume messages from the specified queue via *callback*."""
+        """Consume messages from the specified queue via *callback*.
+
+        Args:
+            queue_name: Queue to poll.
+            callback: Handler invoked as ``callback(message, body)``.
+            max_messages: ``MaxNumberOfMessages`` per receive call.
+            wait_time: ``WaitTimeSeconds`` for long polling.
+            idle_sleep: Seconds to sleep when a poll returns nothing.
+            **kwargs: Accepted for interface compatibility and ignored.
+        """
+        if kwargs:
+            self.logger.debug(
+                "consume_messages: ignoring unsupported kwargs %s", sorted(kwargs)
+            )
         try:
             queue = await self.ensure_queue(queue_name)
             while True:
@@ -286,7 +333,7 @@ class SQSConnection(BaseConnection):
     async def consume_message(
         self,
         queue_name: str,
-        callback: Union[Callable, Awaitable[None]] = None,
+        callback: Optional[MessageCallback] = None,
         wait_time: int = 5,
     ) -> Optional[dict]:
         """Consume a single message from the specified queue.
@@ -318,11 +365,10 @@ class SQSConnection(BaseConnection):
 
             processed_message = await self.process_message(body, attributes)
 
-            if callback:
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(processed_message, body)
-                else:
-                    callback(processed_message, body)
+            if callback is not None:
+                result = callback(processed_message, body)
+                if inspect.isawaitable(result):
+                    await result
 
             await message.delete()
             self.logger.info(f"Message consumed and deleted from queue '{queue_name}'.")

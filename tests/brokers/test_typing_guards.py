@@ -44,3 +44,24 @@ async def test_rabbitmq_hook_rejects_credentials_without_dsn() -> None:
     )
     with pytest.raises(TypeError):
         await hook.connect()
+
+
+def test_redis_require_client_before_connect_raises() -> None:
+    from navigator_eventbus.brokers.redis import RedisConnection
+
+    with pytest.raises(RuntimeError):
+        RedisConnection()._require_client()
+
+
+def test_sqs_require_resource_before_connect_raises() -> None:
+    from navigator_eventbus.brokers.sqs import SQSConnection
+
+    with pytest.raises(RuntimeError):
+        SQSConnection(credentials={"region_name": "us-east-1"})._require_resource()
+
+
+async def test_sqs_publish_requires_queue_name() -> None:
+    from navigator_eventbus.brokers.sqs import SQSConnection
+
+    with pytest.raises(ValueError):
+        await SQSConnection(credentials={"region_name": "us-east-1"}).publish_message({"a": 1})
