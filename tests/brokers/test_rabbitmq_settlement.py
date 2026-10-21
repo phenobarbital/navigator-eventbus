@@ -158,3 +158,27 @@ async def test_rabbitmq_callback_retry_preserved(conn, mock_amqp_channel):
     mock_amqp_channel.basic_publish.assert_awaited_once()
     properties = mock_amqp_channel.basic_publish.await_args.kwargs["properties"]
     assert properties.headers["x-retry"] == "1"
+
+
+def test_reject_delivery_single_class():
+    """connection.py re-exports the dependency-free RejectDelivery (TASK-4570)."""
+    from navigator_eventbus.brokers import exceptions
+    from navigator_eventbus.brokers.rabbitmq import connection
+    from navigator_eventbus.hooks.brokers import rabbitmq as hook_module
+
+    assert connection.RejectDelivery is exceptions.RejectDelivery
+    assert hook_module.RejectDelivery is exceptions.RejectDelivery
+
+
+def test_reject_delivery_import_without_aiormq():
+    """RejectDelivery and the hook module import with aiormq unavailable (TASK-4570)."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; sys.modules['aiormq'] = None; sys.modules['aiormq.abc'] = None\n"
+        "from navigator_eventbus.brokers.exceptions import RejectDelivery\n"
+        "import navigator_eventbus.hooks.brokers.rabbitmq\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

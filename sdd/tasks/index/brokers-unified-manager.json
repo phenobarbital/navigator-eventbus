@@ -5,7 +5,7 @@
   "type": "feature",
   "base_branch": "dev",
   "created_at": "2026-10-20T23:13:09+00:00",
-  "completed_at": "2026-10-21T00:18:18+00:00",
+  "completed_at": "2026-10-21T00:22:58+00:00",
   "parallel_semantics": "exclusive",
   "validation_contract": "required",
   "test_contract": {
@@ -224,6 +224,29 @@
       "started_at": "2026-10-21T00:20:00+00:00",
       "completed_at": "2026-10-21T00:18:18+00:00",
       "file": "sdd/tasks/completed/TASK-4569-manager-start-subscribe-cleanup.md",
+      "verification": "verified"
+    },
+    {
+      "id": "TASK-4570",
+      "slug": "brokers-review-cleanups",
+      "title": "Brokers review cleanups: RejectDelivery import, cancel docs, logging, mypy",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "done",
+      "priority": "low",
+      "effort": "S",
+      "depends_on": [
+        "TASK-4563",
+        "TASK-4566",
+        "TASK-4567"
+      ],
+      "parallel": true,
+      "discovered_from": "issue:abe4a96fc840",
+      "assigned_to": "agent:sdd-fix",
+      "started_at": "2026-10-21T00:25:00+00:00",
+      "completed_at": "2026-10-21T00:22:58+00:00",
+      "file": "sdd/tasks/completed/TASK-4570-brokers-review-cleanups.md",
       "verification": "verified"
     }
   ]

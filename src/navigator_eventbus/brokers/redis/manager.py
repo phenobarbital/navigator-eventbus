@@ -46,7 +46,13 @@ class RedisManager(BrokerManager, RedisConsumer):
         )
 
     async def _stop_consuming(self) -> None:
-        """Cancel and await every consumer task; tolerate none."""
+        """Cancel and await every consumer task; tolerate none.
+
+        Cancellation can land while a handler is still running. That message
+        is never acknowledged (``XACK``), so it stays in the consumer group's
+        pending entries list and is redelivered once claimed again — handlers
+        must be idempotent.
+        """
         tasks, self._consumer_tasks = self._consumer_tasks, []
         for task in tasks:
             task.cancel()

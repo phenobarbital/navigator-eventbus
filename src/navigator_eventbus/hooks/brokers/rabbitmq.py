@@ -11,6 +11,7 @@ FEAT-431 keeps delivery settlement in the connection callback wrapper.
 
 from typing import Any
 
+from navigator_eventbus.brokers.exceptions import RejectDelivery
 from navigator_eventbus.hooks.brokers.base import BaseBrokerHook
 from navigator_eventbus.hooks.models import BrokerHookConfig, HookType
 
@@ -60,15 +61,12 @@ class RabbitMQBrokerHook(BaseBrokerHook):
 
     async def _consumer_callback(self, message: Any, body: Any) -> None:
         message_id = getattr(message, "delivery_tag", str(message))
-        self.logger.debug(f"RabbitMQ msg {message_id}: {body}")
+        self.logger.debug("RabbitMQ msg %s: %s", message_id, body)
         try:
             await self._on_message(message_id=message_id, payload=body, message=message)
         except Exception as exc:
-            self.logger.error(f"RabbitMQ callback error: {exc}")
+            self.logger.error("RabbitMQ callback error: %s", exc)
             # The connection's wrap_callback owns settlement (FEAT-431 M4):
             # signal a non-requeued rejection instead of nacking here, so
             # the delivery is never both rejected and acknowledged.
-            # Lazy on purpose: the connection module imports aiormq, an optional dependency.
-            from navigator_eventbus.brokers.rabbitmq.connection import RejectDelivery
-
             raise RejectDelivery(str(exc)) from exc
