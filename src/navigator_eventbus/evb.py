@@ -28,20 +28,24 @@ New ADDITIVE-ONLY kwargs: ``severity=`` on ``publish``/``emit`` and
 - ``BUS_DRAIN_TIMEOUT`` (default 5.0 s)
 - ``BUS_CHANNEL_PREFIX`` (default ``evb:events:`` — FEAT-312 neutral knob)
 """
+
 import asyncio
+import os
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional
 
 from navconfig import config as nav_config
 from navconfig.logging import logging
 
 if TYPE_CHECKING:  # imported lazily at runtime to avoid a circular import
+    from navigator_eventbus.backends.base import TransportBackend
     from navigator_eventbus.core import BusCore
     from navigator_eventbus.envelope import EventEnvelope, Severity
+    from navigator_eventbus.outbox import OutboxStore
 
 #: Default Redis channel prefix (FEAT-312: neutral default, override via
 #: constructor kwarg or the ``BUS_CHANNEL_PREFIX`` navconfig key).
@@ -50,6 +54,7 @@ DEFAULT_CHANNEL_PREFIX = "evb:events:"
 
 class EventPriority(Enum):
     """Priority levels for events in the event bus."""
+
     LOW = 0
     NORMAL = 5
     HIGH = 10
@@ -59,15 +64,14 @@ class EventPriority(Enum):
 @dataclass
 class Event:
     """Represents an event on the bus."""
-    event_type: str                              # "order.created", "agent.completed"
+
+    event_type: str  # "order.created", "agent.completed"
     payload: Dict[str, Any]
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-    source: Optional[str] = None                 # Who emitted the event
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    source: Optional[str] = None  # Who emitted the event
     priority: EventPriority = EventPriority.NORMAL
-    correlation_id: Optional[str] = None         # Chain-tracking id
+    correlation_id: Optional[str] = None  # Chain-tracking id
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -79,7 +83,7 @@ class Event:
             "source": self.source,
             "priority": self.priority.value,
             "correlation_id": self.correlation_id,
-            "metadata": self.metadata
+            "metadata": self.metadata,
         }
 
     @classmethod
@@ -96,27 +100,28 @@ class Event:
             source=data.get("source"),
             priority=EventPriority(data.get("priority", 5)),
             correlation_id=data.get("correlation_id"),
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
         )
 
 
 @dataclass
 class EventSubscription:
     """Subscription to an event pattern."""
-    pattern: str                                 # "order.*", "agent.completed"
+
+    pattern: str  # "order.*", "agent.completed"
     handler: Callable[[Event], Any]
     subscriber_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    priority: int = 0                            # Execution order
+    priority: int = 0  # Execution order
     filter_fn: Optional[Callable[[Event], bool]] = None
     async_handler: bool = True
 
 
 def _bus_config() -> Dict[str, Any]:
     """Read ``[bus]`` options from navconfig (flattened ``BUS_*`` keys).
-
     Returns:
         BusCore constructor kwargs with documented defaults.
     """
+
     def _get(key: str, fallback: Any, cast: Callable[[Any], Any]) -> Any:
         value = nav_config.get(key, fallback=fallback)
         try:
@@ -132,7 +137,17 @@ def _bus_config() -> Dict[str, Any]:
         "retry_base_delay": _get("BUS_RETRY_BASE_DELAY", 0.1, float),
         "default_backpressure": _get("BUS_DEFAULT_BACKPRESSURE", "block", str),
         "drain_timeout": _get("BUS_DRAIN_TIMEOUT", 5.0, float),
+        "relay_interval": _get("BUS_OUTBOX_RELAY_INTERVAL", 5.0, float),
     }
+
+
+def _truthy(value: Any) -> bool:
+    """Interpret a navconfig value as a boolean.
+
+    Accepted true values are ``"1"``, ``"true"``, ``"yes"``, ``"on"``,
+    and ``True``.
+    """
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class EventBus:
@@ -154,6 +169,13 @@ class EventBus:
         channel_prefix: Redis channel prefix override (FEAT-312 — default
             ``evb:events:``, also configurable via the ``BUS_CHANNEL_PREFIX``
             navconfig key).
+        backend: Explicit transport backend. Takes precedence over
+            ``transport`` and ``use_redis``.
+        transport: Named transport (``memory``, ``pubsub``, or ``streams``).
+            When omitted, reads ``BUS_TRANSPORT`` before legacy selection.
+        publish_only: Do not start the backend consumer.
+        outbox: Durable outbox store or SQLite path. When omitted,
+            ``BUS_OUTBOX_PATH`` is used when configured.
         **bus_options: Additive BusCore overrides (``workers=``,
             ``queue_size=``, ``retry_attempts=``, ...) taking precedence
             over the navconfig ``BUS_*`` defaults.
@@ -167,15 +189,15 @@ class EventBus:
         use_redis: bool = False,
         *,
         channel_prefix: Optional[str] = None,
+        backend: "Optional[TransportBackend]" = None,
+        transport: "Optional[Literal['memory', 'pubsub', 'streams']]" = None,
+        publish_only: bool = False,
+        outbox: "Optional[OutboxStore | str | os.PathLike]" = None,
         **bus_options: Any,
-    ):
+    ) -> None:
         # Lazy imports — envelope/converters import THIS module for
         # EventPriority/Event, so bus modules cannot be imported at the
         # top of evb.py without a circular-import failure.
-        from navigator_eventbus.backends.memory import MemoryBackend
-        from navigator_eventbus.backends.redis_pubsub import (
-            RedisPubSubBackend,
-        )
         from navigator_eventbus.core import BusCore
 
         self.use_redis = use_redis and redis_url is not None
@@ -184,13 +206,14 @@ class EventBus:
             "BUS_CHANNEL_PREFIX", fallback=DEFAULT_CHANNEL_PREFIX
         )
 
-        backend = (
-            RedisPubSubBackend(redis_url, channel_prefix=self.channel_prefix)
-            if self.use_redis
-            else MemoryBackend()
-        )
+        backend = self._select_backend(backend, transport)
         core_opts = _bus_config()
         core_opts.update(bus_options)
+        core_opts.setdefault("outbox", self._resolve_outbox(outbox))
+        core_opts.setdefault(
+            "publish_only",
+            publish_only or _truthy(nav_config.get("BUS_PUBLISH_ONLY", fallback=False)),
+        )
         self._core: "BusCore" = BusCore(backend=backend, **core_opts)
 
         # Event history (optional, for replay) — compat shim, bounded.
@@ -201,14 +224,93 @@ class EventBus:
         self._started = False
         self._closed = False
 
+    def _select_backend(
+        self, backend: "Optional[TransportBackend]", transport: Optional[str]
+    ) -> "TransportBackend":
+        """Pick a backend from explicit, configured, or legacy selection.
+
+        Explicit backends take precedence over explicit/configured transport
+        names, which in turn take precedence over ``use_redis``. Transport names
+        are case-insensitive. ``"streams"`` builds a ``RedisStreamsBackend`` from
+        ``redis_url`` only; ``channel_prefix`` applies to pub/sub alone.
+        Raises:
+            ValueError: If a Redis transport lacks ``redis_url`` or the
+                transport name is unknown.
+        """
+        from navigator_eventbus.backends.memory import MemoryBackend
+        from navigator_eventbus.backends.redis_pubsub import RedisPubSubBackend
+
+        if backend is not None:
+            return backend
+        transport = transport or nav_config.get("BUS_TRANSPORT", fallback=None)
+        if isinstance(transport, str):
+            transport = transport.strip().lower() or None
+        if transport is None:
+            return (
+                RedisPubSubBackend(self.redis_url, channel_prefix=self.channel_prefix)
+                if self.use_redis
+                else MemoryBackend()
+            )
+        if transport == "memory":
+            return MemoryBackend()
+        if transport in ("pubsub", "streams") and self.redis_url is None:
+            raise ValueError(f"transport={transport!r} requires redis_url")
+        if transport == "pubsub":
+            return RedisPubSubBackend(
+                self.redis_url, channel_prefix=self.channel_prefix
+            )
+        if transport == "streams":
+            from navigator_eventbus.backends.redis_streams import RedisStreamsBackend
+
+            return RedisStreamsBackend(self.redis_url)
+        raise ValueError(
+            f"Unknown transport {transport!r}; expected one of 'memory', 'pubsub', 'streams'"
+        )
+
+    def _resolve_outbox(
+        self, outbox: "Optional[OutboxStore | str | os.PathLike]"
+    ) -> "Optional[OutboxStore]":
+        """Build an outbox from a configured path or pass through a store.
+
+        Config keys: ``BUS_OUTBOX_PATH``, ``BUS_OUTBOX_MAX_ROWS``,
+        ``BUS_OUTBOX_OVERFLOW`` and ``BUS_OUTBOX_MAX_AGE`` (seconds, default 7 days).
+        A path is owned by one live bus: build each bus/worker its own file.
+        """
+        from navigator_eventbus.outbox import SqliteOutbox
+
+        if outbox is None:
+            outbox = nav_config.get("BUS_OUTBOX_PATH", fallback=None)
+        if outbox is None:
+            return None
+        if isinstance(outbox, (str, os.PathLike)):
+            max_rows = int(
+                nav_config.get("BUS_OUTBOX_MAX_ROWS", fallback=None) or 1_000_000
+            )
+            overflow = (
+                nav_config.get("BUS_OUTBOX_OVERFLOW", fallback=None) or "reject_new"
+            )
+            if overflow not in ("reject_new", "drop_oldest"):
+                raise ValueError(
+                    f"BUS_OUTBOX_OVERFLOW={overflow!r} is invalid; "
+                    "expected 'reject_new' or 'drop_oldest'"
+                )
+            max_age = float(
+                nav_config.get("BUS_OUTBOX_MAX_AGE", fallback=None) or 7 * 86400
+            )
+            return SqliteOutbox(
+                outbox,
+                max_rows=max_rows,
+                max_age=timedelta(seconds=max_age),
+                overflow=overflow,
+            )
+        return outbox
+
     @property
     def core(self) -> "BusCore":
         """Public accessor to the underlying :class:`BusCore`.
-
         Use this to attach envelope-level components
         (``NotificationSubscriber``, ``AuditSubscriber``,
         ``MetricsSubscriber``, ``DLQHandler``) to a facade-managed bus::
-
             alerter.attach(event_bus.core)
         """
         return self._core
@@ -216,7 +318,6 @@ class EventBus:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-
     async def connect(self):
         """Start the dispatcher (and the Redis consumer when configured)."""
         await self._ensure_started()
@@ -232,6 +333,7 @@ class EventBus:
         """Auto-start BusCore so legacy call sites need no changes."""
         if self._closed:
             from navigator_eventbus.core import BusClosedError
+
             raise BusClosedError("EventBus is closed")
         if not self._started:
             self._started = True
@@ -279,14 +381,19 @@ class EventBus:
         """
         wrapped_filter: Optional[Callable[["EventEnvelope"], bool]] = None
         if filter_fn is not None:
+
             def _filter(envelope: "EventEnvelope") -> bool:
                 return bool(filter_fn(_envelope_to_event(envelope)))
+
             wrapped_filter = _filter
 
         if asyncio.iscoroutinefunction(handler):
+
             async def wrapped_handler(envelope: "EventEnvelope") -> None:
                 await handler(_envelope_to_event(envelope))
+
         else:
+
             def wrapped_handler(envelope: "EventEnvelope") -> None:  # type: ignore[misc]
                 handler(_envelope_to_event(envelope))
 
@@ -340,18 +447,14 @@ class EventBus:
 
         self.logger.debug(
             "Published event %s, %d subscribers matched",
-            event.event_type, matches,
+            event.event_type,
+            matches,
         )
         return matches
 
     # === Convenience methods ===
 
-    async def emit(
-        self,
-        event_type: str,
-        payload: Dict[str, Any],
-        **kwargs
-    ) -> int:
+    async def emit(self, event_type: str, payload: Dict[str, Any], **kwargs) -> int:
         """Shortcut to publish events.
 
         Accepts every legacy ``Event`` kwarg (``source=``, ``priority=``,
@@ -359,18 +462,16 @@ class EventBus:
         ``severity=`` kwarg (FEAT-310).
         """
         severity = kwargs.pop("severity", None)
-        event = Event(
-            event_type=event_type,
-            payload=payload,
-            **kwargs
-        )
+        event = Event(event_type=event_type, payload=payload, **kwargs)
         return await self.publish(event, severity=severity)
 
     def on(self, pattern: str, **kwargs):
         """Decorator to subscribe to events."""
+
         def decorator(fn):
             self.subscribe(pattern, fn, **kwargs)
             return fn
+
         return decorator
 
 

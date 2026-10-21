@@ -3,6 +3,29 @@
 All notable changes to `navigator-eventbus` are documented in this file.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] — Unreleased
+
+FEAT-431 — Unified Broker Manager + brokers hardening.
+
+### Added
+- `BrokerManager` (`navigator_eventbus.brokers`) plus `RMQManager`, `RedisManager`, `SQSManager`
+  (from their subpackages): publish and consume over a single connection, `auto_subscribe` flag,
+  consumer-first shutdown.
+- `BrokerProducer(endpoint_path=...)`: configurable HTTP publish route (default unchanged).
+- `RabbitMQConnection.ensure_queue()` and `reject_message()`.
+
+### Fixed
+- RabbitMQ consumer: an explicit `exchange_name` is no longer overwritten by `queue_name` (D1).
+- `RabbitMQBrokerHook.connect()` no longer raises `AttributeError`; hook failures settle once
+  (non-requeued nack, no ack/republish).
+- `queue_event()` no longer sleeps 100 ms per event.
+
+### Changed
+- **Behaviour change** — `RMQConsumer.event_subscribe()` / `SQSConsumer.event_subscribe()` wrap the
+  callback once: callbacks now receive `(message, decoded_body)` as documented, instead of failing on
+  a double wrap. Callers that compensated for the double wrap (e.g. unpacking an extra layer) should
+  drop that workaround and accept `(message, body)` directly.
+
 ## [0.1.0] — Unreleased (pending tag + PyPI publish)
 
 Supersedes `0.1.0rc2`. Ships the FEAT-319 (EventBus Consolidation) M1+M2

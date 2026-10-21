@@ -6,10 +6,13 @@ lazy-import ahora apunta al port interno de FEAT-316
 (``navigator_eventbus.brokers.redis.RedisConnection``) — el paquete ya no
 depende del framework navigator externo para soporte de brokers.
 """
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from navigator_eventbus.hooks.brokers.base import BaseBrokerHook
 from navigator_eventbus.hooks.models import BrokerHookConfig, HookType
+
+if TYPE_CHECKING:
+    from navigator_eventbus.brokers.redis import RedisConnection
 
 
 class RedisBrokerHook(BaseBrokerHook):
@@ -22,12 +25,18 @@ class RedisBrokerHook(BaseBrokerHook):
         self._stream = config.stream_name or config.queue_name or "default_stream"
         self._group = config.group_name
         self._consumer = config.consumer_name
-        self._connection = None
+        self._connection: Optional["RedisConnection"] = None
 
     async def connect(self) -> None:
         from navigator_eventbus.brokers.redis import RedisConnection
-        self._connection = RedisConnection(credentials=self._config.credentials)
-        await self._connection.connect()  # type: ignore[attr-defined]
+        connection = RedisConnection(
+            credentials=self._config.credentials,
+            queue_name=self._stream,
+            group_name=self._group,
+            consumer_name=self._consumer,
+        )
+        await connection.connect()
+        self._connection = connection
         self.logger.info("Redis Stream connection established")
 
     async def disconnect(self) -> None:
@@ -36,11 +45,17 @@ class RedisBrokerHook(BaseBrokerHook):
             self.logger.info("Redis Stream connection closed")
 
     async def start_consuming(self) -> None:
-        await self._connection.consume_messages(  # type: ignore[attr-defined]
-            stream_name=self._stream,
-            group_name=self._group,
-            consumer_name=self._consumer,
+        """Consume from the configured stream.
+
+        Raises:
+            RuntimeError: If :meth:`connect` has not run.
+        """
+        if self._connection is None:
+            raise RuntimeError("RedisBrokerHook.connect() must run before start_consuming()")
+        await self._connection.consume_messages(
+            queue_name=self._stream,
             callback=self._consumer_callback,
+            consumer_name=self._consumer,
         )
 
     async def _consumer_callback(self, message_id: Any, body: Any) -> None:

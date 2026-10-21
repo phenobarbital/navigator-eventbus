@@ -1,0 +1,93 @@
+{
+  "feature": "fixgroup-17c252023ef4",
+  "feature_id": "FEAT-712",
+  "spec": "sdd/specs/fixgroup-17c252023ef4.spec.md",
+  "type": "feature",
+  "base_branch": "dev",
+  "created_at": "2026-10-21T00:42:08+00:00",
+  "completed_at": "2026-10-21T00:56:17+00:00",
+  "parallel_semantics": "exclusive",
+  "validation_contract": "required",
+  "test_contract": {
+    "schema": 2,
+    "runners": [
+      {
+        "kind": "pytest",
+        "targets": [
+          "tests/brokers/test_mypy_clean.py",
+          "tests/brokers/test_typing_guards.py",
+          "tests/brokers/test_connection.py",
+          "tests/brokers/test_consumer_fixes.py",
+          "tests/brokers/test_hook_rewire.py",
+          "tests/brokers/test_manager.py",
+          "tests/brokers/test_manager_integration.py",
+          "tests/brokers/test_producer.py",
+          "tests/brokers/test_rabbitmq.py",
+          "tests/brokers/test_rabbitmq_settlement.py",
+          "tests/brokers/test_redis_consumer.py",
+          "tests/brokers/test_redis_integration.py",
+          "tests/brokers/test_redis_manager.py",
+          "tests/brokers/test_redis_reclaim.py",
+          "tests/brokers/test_rmq_manager.py",
+          "tests/brokers/test_serializers.py",
+          "tests/brokers/test_sqs_manager.py",
+          "tests/brokers/test_sqs.py",
+          "tests/test_hooks_imports.py"
+        ],
+        "settings": {
+          "markers": ""
+        },
+        "tiers": [
+          "task",
+          "merge",
+          "feature"
+        ]
+      }
+    ],
+    "digest": "sha256:acfbb64943e81fecd25ad8f32083f7d40caf68f69b40b2484e0f7a01c0d17519"
+  },
+  "tasks": [
+    {
+      "id": "TASK-4571",
+      "slug": "brokers-typing-base-rabbitmq",
+      "title": "Brokers typing pass — base contracts, RabbitMQ family, broker hooks",
+      "feature_id": "FEAT-712",
+      "feature": "fixgroup-17c252023ef4",
+      "spec": "sdd/specs/fixgroup-17c252023ef4.spec.md",
+      "status": "done",
+      "priority": "medium",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "No dependencies: creates MessageCallback in brokers/connection.py and owns the base files, brokers/rabbitmq/* and hooks/brokers/*; creates tests/brokers/test_typing_guards.py.",
+      "assigned_to": "agent:sdd-fix",
+      "started_at": "2026-10-21T00:44:09+00:00",
+      "completed_at": "2026-10-21T00:48:33+00:00",
+      "file": "sdd/tasks/completed/TASK-4571-brokers-typing-base-rabbitmq.md",
+      "discovered_from": "issue:b12a71083ca3",
+      "verification": "verified"
+    },
+    {
+      "id": "TASK-4572",
+      "slug": "brokers-typing-redis-sqs-gate",
+      "title": "Brokers typing pass — Redis + SQS families and the pytest mypy gate",
+      "feature_id": "FEAT-712",
+      "feature": "fixgroup-17c252023ef4",
+      "spec": "sdd/specs/fixgroup-17c252023ef4.spec.md",
+      "status": "done",
+      "priority": "medium",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4571"
+      ],
+      "parallel": true,
+      "parallelism_notes": "Imports MessageCallback from TASK-4571 (src/navigator_eventbus/brokers/connection.py) and appends to tests/brokers/test_typing_guards.py created by TASK-4571; the mypy gate test needs TASK-4571's base/RabbitMQ fixes to pass.",
+      "assigned_to": "agent:sdd-fix",
+      "started_at": "2026-10-21T00:50:37+00:00",
+      "completed_at": "2026-10-21T00:54:40+00:00",
+      "file": "sdd/tasks/completed/TASK-4572-brokers-typing-redis-sqs-gate.md",
+      "discovered_from": "issue:b12a71083ca3",
+      "verification": "verified"
+    }
+  ]
+}

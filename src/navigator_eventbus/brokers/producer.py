@@ -13,6 +13,7 @@ Applies three desacoples plus PR navigator#393 fix #3:
 - **navigator.conf desacople**: ``BROKER_MANAGER_QUEUE_SIZE`` is read from
   the local :mod:`navigator_eventbus.brokers._conf` module.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,6 +42,9 @@ class BrokerProducer(BaseConnection, ABC):
             authenticate the incoming ``aiohttp`` request and return a
             session dict. When ``None``, protected endpoints reject the
             request with 401 — the producer never proceeds unauthenticated.
+        endpoint_path: Optional path for the HTTP publish endpoint. When
+            ``None`` (default), ``/api/v1/broker/<broker_service>/publish_event``
+            is used (FEAT-431).
     """
 
     _name_: str = "broker_producer"
@@ -53,6 +57,7 @@ class BrokerProducer(BaseConnection, ABC):
         timeout: Optional[int] = 5,
         *,
         auth_callable: Optional[Callable[[web.Request], Awaitable[Any]]] = None,
+        endpoint_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         self.queue_size: int = queue_size if queue_size else BROKER_MANAGER_QUEUE_SIZE
@@ -64,6 +69,7 @@ class BrokerProducer(BaseConnection, ABC):
         self._workers: list = []
         self._broker_service: str = kwargs.get("broker_service", "rabbitmq")
         self._auth_callable = auth_callable
+        self._endpoint_path: Optional[str] = endpoint_path
         self._userid: Optional[int] = None
         # NOTE: passed as keywords (not positionally, as the navigator source
         # did) so BaseConnection.__init__ actually receives and stores them
@@ -93,11 +99,12 @@ class BrokerProducer(BaseConnection, ABC):
         self.app.on_startup.append(self.start)
         self.app.on_shutdown.append(self.stop)
         self.app[self._name_] = self
-        # Generic Event Subscription:
-        self.app.router.add_post(
-            f"/api/v1/broker/{self._broker_service}/publish_event",
-            self.event_publisher,
+        # Generic Event Subscription (path configurable — FEAT-431 Module 1):
+        path = (
+            self._endpoint_path
+            or f"/api/v1/broker/{self._broker_service}/publish_event"
         )
+        self.app.router.add_post(path, self.event_publisher)
         self.logger.notice(":: Starting Message Queue Producer ::")  # type: ignore[attr-defined]
 
     async def start_workers(self) -> None:
@@ -135,7 +142,7 @@ class BrokerProducer(BaseConnection, ABC):
 
     async def queue_event(
         self,
-        body: str,
+        body: Any,
         queue_name: str,
         routing_key: Optional[str] = None,
         **kwargs: Any,
@@ -154,14 +161,13 @@ class BrokerProducer(BaseConnection, ABC):
                     **kwargs,
                 }
             )
-            await asyncio.sleep(0.1)
         except asyncio.QueueFull:
             self.logger.error("Event queue is full. Event will not published.")
             raise
 
     async def publish_event(
         self,
-        body: str,
+        body: Any,
         queue_name: str,
         **kwargs: Any,
     ) -> None:
@@ -188,7 +194,7 @@ class BrokerProducer(BaseConnection, ABC):
 
     @staticmethod
     def service_auth(
-        fn: Callable[..., Awaitable[Any]]
+        fn: Callable[..., Awaitable[Any]],
     ) -> Callable[..., Awaitable[Any]]:
         """Decorate an endpoint to require an injected ``auth_callable``.
 

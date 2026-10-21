@@ -4,6 +4,12 @@
 # - type: hotfix              → base_branch MUST be: main
 type: feature
 base_branch: dev
+# projects: parts of the codebase this doc concerns. Use `packages/*` dir names
+#   (ai-parrot, ai-parrot-server, parrot-formdesigner, …) or an area
+#   (sdd-tooling, dev-loop, admin-ui, docs, ci). Unknown values warn, not fail.
+projects: []
+# tags: free-form kebab-case keywords for organizing specs (e.g. memory, mcp).
+tags: []
 ---
 
 # Brainstorm: <Title>
@@ -172,7 +178,7 @@ base_branch: dev
 
 #### Classes & Signatures
 ```python
-# From src/navigator_eventbus/path/to/file.py:NN
+# From parrot/path/to/file.py:NN
 class ExistingClass(BaseClass):
     attribute: Type  # line NN
     async def method(self, param: Type) -> ReturnType:  # line NN
@@ -182,17 +188,17 @@ class ExistingClass(BaseClass):
 #### Verified Imports
 ```python
 # These imports have been confirmed to work:
-from navigator_eventbus.module import ClassName  # src/navigator_eventbus/module/__init__.py:NN
+from parrot.module import ClassName  # parrot/module/__init__.py:NN
 ```
 
 #### Key Attributes & Constants
 <!-- List attributes/constants that tasks will need to reference -->
-- `ClassName.attribute_name` → `Type` (src/navigator_eventbus/path/file.py:NN)
+- `ClassName.attribute_name` → `Type` (parrot/path/file.py:NN)
 
 ### Does NOT Exist (Anti-Hallucination)
 <!-- List things that might seem like they should exist but DO NOT.
      This prevents implementing agents from assuming these are available. -->
-- ~~`navigator_eventbus.module.NonExistentThing`~~ — does not exist
+- ~~`parrot.module.NonExistentThing`~~ — does not exist
 - ~~`ClassName.phantom_attribute`~~ — not a real attribute
 
 ---

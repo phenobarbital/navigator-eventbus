@@ -1,10 +1,10 @@
 ---
-description: Research-first proposal generator. Takes a source (ticket, inline text, or file), investigates the codebase, synthesizes findings with confidence-graded reasoning, and produces a grounded proposal document that feeds into /sdd-spec or /sdd-brainstorm.
+description: Research-first proposal generator. Takes a source (Jira ticket, inline text, or file), investigates the codebase, synthesizes findings with confidence-graded reasoning, and produces a grounded proposal document that feeds into /sdd-spec or /sdd-brainstorm.
 ---
 
-# /sdd-proposal -- Research-First Feature Proposal
+# /sdd-proposal — Research-First Feature Proposal
 
-Take a thin source -- typically a sparse ticket like *"DLQ handler no procesa reintentos"* --
+Take a thin source — typically a sparse Jira ticket like *"Nextstop module no genera el PDF"* —
 and produce a proposal document that is **grounded in the codebase before any human Q&A**.
 
 The pipeline inverts `/sdd-brainstorm`: instead of asking the user to fill the gaps,
@@ -13,39 +13,41 @@ then asks targeted questions about genuine unknowns.
 
 ```
 /sdd-proposal <source>
-  -> Phase 0: source resolution
-  -> Phase 1: research plan generation (gate)
-  -> Phase 2: agentic codebase research (budgeted)
-  -> Phase 3: synthesis (chain-of-thought, evidence-grounded)
-  -> Phase 4: review gate (human validates synthesis)
-  -> Phase 5: targeted Q&A (only for material unknowns)
-  -> Phase 6: enriched proposal rendering
-  -> Phase 7: commit + next-command recommendation
+  → Phase 0: source resolution
+  → Phase 1: research plan generation (gate)
+  → Phase 2: agentic codebase research (budgeted)
+  → Phase 3: synthesis (chain-of-thought, evidence-grounded)
+  → Phase 4: review gate (human validates synthesis)
+  → Phase 5: targeted Q&A (only for material unknowns)
+  → Phase 6: enriched proposal rendering
+  → Phase 7: commit + next-command recommendation
 ```
 
 ## Usage
 
 ```
-/sdd-proposal FEAT-312                          # ticket key
-/sdd-proposal "DLQ no procesa reintentos"       # inline text
+/sdd-proposal NAV-8421                          # Jira key
+/sdd-proposal "Nextstop no genera el PDF"       # inline text
 /sdd-proposal path/to/notes.md                  # file path
-/sdd-proposal FEAT-312 --mode=investigation     # force mode
-/sdd-proposal FEAT-312 --mode=enrichment
-/sdd-proposal FEAT-312 --no-gate                # skip user gates (autopilot mode)
+/sdd-proposal NAV-8421 --mode=investigation     # force mode
+/sdd-proposal NAV-8421 --mode=enrichment
+/sdd-proposal NAV-8421 --no-gate                # skip user gates (autopilot mode)
 /sdd-proposal --resume FEAT-156                 # resume interrupted run
-/sdd-proposal FEAT-312 --budget=loose           # tight | default | loose
+/sdd-proposal NAV-8421 --budget=loose           # tight | default | loose
+/sdd-proposal NAV-8421 --no-parallel
 ```
 
 ## Guardrails
 
-- **Grep-first, then read, then ask.** Use `grep`, `rg`, and `find` to orient
-  in the codebase before reading files. The codebase itself is the primary
-  evidence source. Never ask the user something the repo can answer.
+- **Wiki-first, then grep, then ask.** The codebase knowledge graph
+  (``wikitoolkit``) is the fastest orientation source. Query it before
+  grep/glob/read. The codebase itself is the primary evidence source.
+  Never ask the user something the repo or wiki can answer.
 - **No fabricated paths or symbols.** Every code reference in the proposal must
   trace to a finding ID. Validated by the synthesis linter (Step 3.5).
-- **Honest confidence.** If research is thin, the proposal must say so -- not
+- **Honest confidence.** If research is thin, the proposal must say so — not
   inflate certainty. `overall_confidence` is bounded by the budget consumed.
-- **Tri-mode source resolution** mirrors `/sdd-fromjira` (ticket / inline / file).
+- **Tri-mode source resolution** mirrors `/sdd-fromjira` (Jira / inline / file).
 - **Always commit the proposal file** so worktrees can see it.
 - **Do NOT generate implementation code.** Output is a proposal, not a spec.
 - **State persists** under `sdd/state/<FEAT-ID>/` for resumability and audit.
@@ -63,7 +65,7 @@ You must be on `dev`, `staging`, or the integration branch when starting. The
 
 **Validation:** if `TYPE == "feature"` and `BASE_BRANCH == "main"`, abort:
 ```
-type='feature' cannot base on 'main'. Features land on dev (default)
+⚠️  type='feature' cannot base on 'main'. Features land on dev (default)
    or staging (during a release freeze). For changes that must base on
    main, set type='hotfix' in the document frontmatter.
 ```
@@ -71,8 +73,8 @@ type='feature' cannot base on 'main'. Features land on dev (default)
 ### 1. Parse Input & Allocate FEAT-ID
 
 Extract from the user's invocation:
-- **source**: ticket key (regex `^[A-Z]+-\d+$`), inline string, or path to file.
-- **flags**: `--mode`, `--no-gate`, `--resume`, `--budget`.
+- **source**: Jira key (regex `^[A-Z]+-\d+$`), inline string, or path to file.
+- **flags**: `--mode`, `--no-gate`, `--resume`, `--budget`, `--no-parallel`.
 
 If `--resume <FEAT-ID>` is set, jump to **Step R** at the bottom.
 
@@ -100,23 +102,42 @@ Initialize `${STATE_DIR}/state.json` per the schema in
 | `default`   |         40 |         25 |        10 |     2 |          300 |
 | `loose`     |        100 |         60 |        20 |     3 |          900 |
 
-### 2. Phase 0 -- Resolve Source
+#### Per-lane allocation (parallel research, FEAT-708)
 
-#### 2a. Ticket source
+When Phase 2 runs in parallel (§4a), each of the three research lanes gets a
+fixed slice of the profile. All fractions use `floor()` so the lanes together
+never exceed the profile; unused quota in one lane is **not** reclaimable by
+another.
 
-Search the repository for existing specs, task files, or brainstorm docs
-that reference the ticket key. Use `grep` and `find`:
+| Lane | files_read | grep_calls | git_calls | depth | wall_seconds |
+|------|-----------:|-----------:|----------:|------:|-------------:|
+| codebase | `floor(0.60 × files_read)` | `floor(0.80 × grep_calls)` | 0 | profile | `floor(0.85 × wall_seconds)` |
+| git      | `floor(0.20 × files_read)` | 0 | `git_calls` | 1 | `floor(0.85 × wall_seconds)` |
+| wiki     | `floor(0.20 × files_read)` | `floor(0.20 × grep_calls)` | 0 | profile | `floor(0.85 × wall_seconds)` |
 
-```bash
-# Search for SDD artifacts referencing this ticket
-grep -rl "$TICKET_KEY" sdd/ 2>/dev/null
+Wiki queries remain free against the budget, as specified by the Phase 2
+iteration rule.
 
-# Check GitHub issues
-gh issue list --search "$TICKET_KEY" --json number,title,body 2>/dev/null
-```
+The remaining `wall_seconds − floor(0.85 × wall_seconds)` (~15%) is the
+**merge window**, reserved for join + dedup + checkpoint (§4c).
 
-Capture: summary, description, components, labels, status, priority,
-acceptance criteria.
+Phase 2 runs **sequentially** (no lanes, no forks) when any of:
+- `--budget=tight` — fork overhead is not justified for 15 files / 120 s;
+- any non-standard (custom) budget — per-lane custom limits are not supported;
+- `--no-parallel` was passed;
+- the Agent tool is unavailable (detected at dispatch, §4a).
+
+### 2. Phase 0 — Resolve Source
+
+#### 2a. Jira source
+
+Use the same access strategy as `/sdd-fromjira`:
+- **MCP path**: `jira_get_issue(issue_key=<KEY>)` if available.
+- **curl fallback**: load `JIRA_INSTANCE`, `JIRA_USERNAME`, `JIRA_API_TOKEN`
+  via navconfig (see `/sdd-fromjira` for the eval snippet).
+
+Capture: summary, description, comments, components, labels, status, priority,
+acceptance criteria field, linked issues.
 
 #### 2b. Inline source
 
@@ -132,10 +153,10 @@ whole file as body text.
 Write the raw source to `${STATE_DIR}/source.md` with a small frontmatter:
 ```yaml
 ---
-kind: ticket | inline | file
-ticket_key: FEAT-XXX | null
+kind: jira | inline | file
+jira_key: NAV-XXXX | null
 fetched_at: <ISO timestamp>
-summary_oneline: <<=120 chars one-line summary>
+summary_oneline: <≤120 chars one-line summary>
 ---
 ```
 
@@ -143,18 +164,30 @@ Update `state.json`:
 - `source.*` fields populated
 - `phase: "source_resolved"`
 
-### 3. Phase 1 -- Generate Research Plan
+### 3. Phase 1 — Generate Research Plan
 
-#### 3a. Run the planner prompt
+#### 3a. Check wiki availability
+
+Before generating the plan, probe whether the knowledge graph is built:
+```bash
+wikitoolkit status 2>&1
+```
+If the output contains "Wiki not built", set `wiki_available: false` in
+`state.json` and inform the planner so it omits `wiki_*` query types.
+Otherwise set `wiki_available: true`.
+
+#### 3b. Run the planner prompt
 
 Invoke the prompt at `sdd/templates/research_plan.prompt.md`, passing:
 - contents of `${STATE_DIR}/source.md`
 - the budget block
+- `wiki_available` flag (so the planner knows whether to emit wiki queries)
 - repository top-level structure (`ls -la` of repo root, plus `find . -type d -maxdepth 3`)
 
-The planner produces a JSON document conforming to
-`sdd/templates/research_plan.schema.json` -- a list of `queries` with
-intent, type (`grep | glob | read | git_log | tree`), parameters, and
+The planner produces a JSON document in the format defined by the
+prompt's "Output format" section (there is no separate schema file) — a
+list of `queries` with intent, type (`wiki_query | wiki_page |
+wiki_related | grep | glob | read | git_log | tree`), parameters, and
 priority.
 
 Persist to `${STATE_DIR}/research_plan.json`.
@@ -164,16 +197,16 @@ Persist to `${STATE_DIR}/research_plan.json`.
 Unless `--no-gate` is set, print:
 
 ```
-Research Plan for <FEAT-ID> -- <one-line summary>
+🔍 Research Plan for <FEAT-ID> — <one-line summary>
 
 Mode (detected): investigation | enrichment
 
 Queries (N=<count>):
-  Q001  [grep]      "eventbus"                    -> locate module
-  Q002  [grep]      "publish|subscribe"           -> find pub/sub entrypoints
-  Q003  [glob]      "**/eventbus/**"              -> list module files
-  Q004  [git_log]   src/navigator_eventbus/       -> recent activity
-  Q005  [read]      tests/test_bus.py             -> existing test coverage
+  Q001  [grep]      "nextstop"                    → locate module
+  Q002  [grep]      "generate_pdf|render_pdf"     → find PDF entrypoints
+  Q003  [glob]      "**/nextstop/**"              → list module files
+  Q004  [git_log]   app/modules/nextstop/         → recent activity
+  Q005  [read]      tests/nextstop/test_pdf.py    → existing test coverage
   ...
 
 Budget: <profile> (max 40 files, 25 greps, 10 git, depth 2, 300s)
@@ -189,26 +222,93 @@ Update `state.json`:
 - `phases.plan.approved_by_user: true`
 - `phase: "plan_approved"`
 
-### 4. Phase 2 -- Execute Research
+### 4. Phase 2 — Execute Research
+
+#### 4.0 Dispatch — parallel lanes or sequential (FEAT-708)
+
+Decide the execution mode first. Run **sequentially** (skip to §4a, record
+`phases.research.parallel = {"enabled": false, "fallback_reason": "<why>"}`)
+when the per-lane allocation in §1 says so (tight, custom, `--no-parallel`).
+Otherwise:
+
+1. **Partition** the approved plan by query `type`:
+
+   | Lane | Prefix | Query types |
+   |---|---|---|
+   | codebase | `FC` | `grep`, `glob`, `read`, `tree` |
+   | git | `FG` | `git_log` |
+   | wiki | `FW` | `wiki_query`, `wiki_page`, `wiki_related` |
+
+   A query with a `parent_id` stays in its parent's lane, so `wiki_query → wiki_page`
+   chains never split. An empty lane is not dispatched (status `completed`, 0 findings).
+2. **Allocate** each lane its quota from the §1 per-lane table.
+3. **Dispatch** all non-empty lanes in ONE message — one `Agent` call per lane:
+
+   ```
+   Agent({
+     subagent_type: "fork",
+     description: "<lane> research lane",
+     prompt: "Lane: <lane>. Prefix: <FC|FG|FW>. STATE_DIR: <abs path>.
+              Limits: <lane quota JSON>. Queries: <lane query list JSON>.
+              Follow §4a of /sdd-proposal for each query. Write findings ONLY as
+              ${STATE_DIR}/findings/<PREFIX>-<NNN>-<slug>.md. Do NOT write state.json.
+              Record any follow-up that belongs to another lane as a Notes line
+              `[cross-lane: type=<type>, intent=<text>]`. End with a JSON line:
+              {\"lane\":..., \"queries_executed\":N, \"queries_skipped\":N,
+               \"files_read\":N, \"grep_calls\":N, \"git_calls\":N, \"findings\":[ids]}"
+   })
+   ```
+
+   The prompt carries no `source.md`/Jira text — forks read the state dir on disk.
+   **If the Agent call errors** (tool unavailable, fork not supported), this IS the
+   capability probe: record `fallback_reason: "agent-unavailable"` and run §4a sequentially.
+4. **Collect** each fork's completion. The parent stops waiting at
+   `floor(0.85 × wall_seconds)`; a lane still running at that point is failed. Keep
+   completed lanes' findings. Stop the timed-out fork (TaskStop) or move its `<PREFIX>-*` files to `findings/.audit/partial/` first, so late writes are never double-counted. Re-run a failed or timed-out lane's queries sequentially
+   through §4a; if that retry also fails, set the lane `status: failed`,
+   `error: <msg>`, and continue.
+5. **Checkpoint** `state.json` (parent only): set `phases.research.parallel.lanes.<lane>`
+   (`lane_record`), add every lane's counters into `consumed.*`, then go to §4c (merge).
+
+**Resume.** On `--resume` in Phase 2: a lane whose `<PREFIX>-*` findings exist AND whose
+`lanes.<lane>.completed_at` is set is skipped; a lane with findings but no
+`completed_at` is re-dispatched (its partial `<PREFIX>-*` files are moved to
+`findings/.audit/partial/` first).
 
 #### 4a. Iteration loop
+
+This loop is the sequential path and the per-lane procedure each fork follows.
 
 For each query in the approved plan, in priority order:
 
 1. **Budget check.** Compare `consumed` vs `budget`. If any limit will be
    exceeded by this query, skip it and record `queries_skipped++`.
+   **Wiki queries (`wiki_query`, `wiki_page`, `wiki_related`) are free —
+   always execute them regardless of budget.**
 2. **Execute** the query using the appropriate tool:
-   - `grep` / `glob` -> use the agent's search tools
-   - `read` -> read the target file (or specified line range)
-   - `git_log` -> `git log --follow --since=<window> -- <path>`
-   - `tree` -> `find <path> -type f -maxdepth N`
+   - `wiki_query` → `wikitoolkit query "<question>"` — returns ranked
+     page stubs with IDs, scores, and summaries. Record page IDs for
+     follow-up `wiki_page`/`wiki_related` queries.
+   - `wiki_page` → `wikitoolkit page <id>` — returns full page content
+     (file summary, API outline, content). Use the page ID returned by
+     a prior `wiki_query`.
+   - `wiki_related` → `wikitoolkit related <id>` — returns typed edges
+     (`contains`, `references`) to neighbouring files/modules. Use to
+     discover integration points and dependencies.
+   - `grep` / `glob` → use the agent's search tools
+   - `read` → read the target file (or specified line range)
+   - `git_log` → `git log --follow --since=<window> -- <path>`
+   - `tree` → `find <path> -type f -maxdepth N`
 3. **Persist a digest** at `${STATE_DIR}/findings/F<NNN>-<slug>.md` using the
-   format in `sdd/templates/finding.md`. The digest is **compact** -- never
-   inline full file content; cite line ranges and excerpts only.
+   format in `sdd/templates/finding.md`. Inside a fork, use
+   `${STATE_DIR}/findings/<PREFIX>-<NNN>-<slug>.md` instead. The digest is
+   **compact** — never inline full file content; cite line ranges and excerpts
+   only. For wiki findings, cite the wiki page ID and score alongside file paths.
 4. **Decide on recursion.** If a finding surfaces a new file/symbol that
    strongly warrants exploration AND `depth_reached < max_depth`, add a
    follow-up query to the plan with `parent_id: F<NNN>` and re-enter the loop.
 5. **Update `state.json`** after each query: `consumed.*`, `phases.research.*`.
+   Inside a fork, do NOT write `state.json`; the parent is the sole state writer.
 
 #### 4b. Stop conditions
 
@@ -220,25 +320,89 @@ Update `state.json`:
 - `phase: "research_complete"`
 - `phases.research.completed_at`, `duration_seconds`, `files_read`, etc.
 
-### 5. Phase 3 -- Synthesis
+#### 4c. Merge lane findings (parallel mode only)
+
+Skip when Phase 2 ran sequentially (findings are already `F<NNN>`).
+
+1. Read every `${STATE_DIR}/findings/{FC,FG,FW}-*.md` and extract each
+   citation as a `(path, symbol, line_range)` tuple from its `## Citations`.
+2. **Group by citation identity**: two findings merge when they share a
+   `(path, symbol)` and their line ranges overlap. Same path but different
+   symbols → separate findings (never merge on path alone).
+   Findings with **no** citations (e.g. a pure wiki overview): define them as never merging —
+   each stays its own canonical finding (bounded by "never merge on path alone").
+3. **Merge** a group: union of citations (overlapping ranges collapsed),
+   summaries concatenated, the deeper `depth` kept, `## Notes` combined
+   (cross-lane notes preserved verbatim).
+4. **Renumber** the merged set `F001`, `F002`, … in lane order codebase → git → wiki,
+   then by original number. Write them to `${STATE_DIR}/findings/F<NNN>-<slug>.md`.
+5. **Archive** the lane originals: move every `FC-*`, `FG-*`, `FW-*` to
+   `${STATE_DIR}/findings/.audit/`.
+6. **Validate**: no two canonical findings share a `(path, symbol)`; IDs run
+   `F001..F<N>` with no gaps. A failure here is fixed before Phase 3, never skipped.
+7. **Checkpoint** `phases.research.parallel.merge` = `{started_at, completed_at,
+   input_count, output_count, merged_count: input_count − output_count,
+   audit_dir: "findings/.audit"}`, then set `phase: "research_complete"`.
+
+#### 4d. Citation probe (FEAT-708)
+
+Extract every citation from `${STATE_DIR}/findings/F*.md` (`## Citations`),
+dedupe across findings, and map each to an `sdd-contract-probe` check
+(`file` for `path:NN`, `symbol` for a cited class/function — keep the cited
+signature as `expected` — `anchor` for a quoted line, `import` for an import,
+`absent` for a "does not exist" claim; ids `c0, c1, …`, keep a
+check-id → finding-id map). Launch the probes in ONE message
+(≤ ~40 checks each, grouped by file), each with only the repository root and its
+probe sheet:
+- Claude Code: `Agent({subagent_type: "sdd-contract-probe", description: "Verify finding citations",
+  prompt: "Repository root: <abs path>\nProbe sheet: <JSON array>"})`;
+- Antigravity: ask the `sdd-contract-probe` subagent
+  (`.agents/agents/sdd-contract-probe/agent.md`) with that same prompt;
+- any other host (Codex included) has no probe agent: verify inline.
+Then continue with §5a — that assembly is **provisional**, because §5b re-runs it
+over the tagged findings. With fewer than ~10 citations, or when your host cannot
+launch the probe, run the same checks inline.
+
+### 5. Phase 3 — Synthesis
 
 #### 5a. Build the synthesis input
+
+If §4d probes are running, assemble the input now as a **provisional** pass; §5b
+collects the probes, tags the findings, and then re-runs this concatenation to
+produce the input the synthesis prompt actually receives.
 
 Concatenate, in order:
 - `${STATE_DIR}/source.md` content
 - `${STATE_DIR}/research_plan.json` content
-- All `${STATE_DIR}/findings/*.md` digests, wrapped in `<finding id="F00N">` tags
+- All `${STATE_DIR}/findings/F<NNN>-*.md` digests (never `findings/.audit/`), wrapped in `<finding id="F00N">` tags
 - A `<budget_status>` block with `consumed`, `truncated`, `truncation_reason`
 - A `<mode>` block with the resolved mode (forced or auto-detected)
 
 #### 5b. Run the synthesis prompt
+
+**First, collect the §4d probes.** Verify each report with `/sdd-task` §3's
+rules for `sdd-contract-probe`, classify every check:
+
+| Probe result | Claim status |
+|---|---|
+| `import` `found`/`reexported`; `file` `found`; `anchor` `found`; `absent` `absent` | `verified` (evidence = `path:lines[0]`) |
+| `symbol` `found` and `signature` == `expected` (whitespace-normalized) | `verified` |
+| `symbol` `found` and `signature` ≠ `expected` | `stale` (evidence = actual `signature` + line) |
+| `anchor` `ambiguous`; `absent` `present` (the "missing" thing exists) | `stale` |
+| `import` `missing`/`module-missing`; `symbol`/`file`/`anchor` `missing`; `file` `short` | `missing` |
+
+and for each `stale` or `missing` check append
+`[citation-check: stale|missing] <path:line> — <evidence>` to the owning
+finding's `## Notes`. **Then re-run §5a** over the tagged findings and use that
+second assembly as the synthesis input; the provisional one is discarded, never
+patched in place.
 
 Invoke `sdd/templates/synthesis.prompt.md`. The agent produces a JSON object
 conforming to the synthesis output schema embedded in that prompt.
 
 Persist the **JSON only** (not the `<thinking>` block) to
 `${STATE_DIR}/synthesis.json`. If you want auditability, also persist the
-thinking to `${STATE_DIR}/synthesis.thinking.log` -- this is optional but
+thinking to `${STATE_DIR}/synthesis.thinking.log` — this is optional but
 recommended.
 
 #### 5c. Lint the synthesis
@@ -248,11 +412,11 @@ Validate `synthesis.json` against the rules:
 1. Every `path` and `symbol` mentioned in `localization` and `constraints`
    appears in at least one finding's `citations`.
 2. Every `evidence` array contains finding IDs that exist.
-3. `overall_confidence` <= minimum of (median claim confidence, localization
+3. `overall_confidence` ≤ minimum of (median claim confidence, localization
    confidence, hypothesis-1 / scope confidence).
-4. If `truncated: true`, `overall_confidence` <= `medium` and
-   `recommended_next_command` != `sdd-task`.
-5. `unknowns.length <= 5`.
+4. If `truncated: true`, `overall_confidence` ≤ `medium` and
+   `recommended_next_command` ≠ `sdd-task`.
+5. `unknowns.length ≤ 5`.
 
 If any rule fails, **re-prompt the synthesis once** with the violations
 appended as a corrective addendum. If it still fails, surface the error to
@@ -262,33 +426,33 @@ Update `state.json`:
 - `phase: "synthesis_complete"`
 - `phases.synthesis.*` populated from the JSON
 
-### 6. Phase 4 -- Review Gate
+### 6. Phase 4 — Review Gate
 
 Print a human-readable summary of the synthesis:
 
 ```
-Synthesis Summary -- <FEAT-ID>
+🧠 Synthesis Summary — <FEAT-ID>
 
 Mode: investigation | enrichment
 Overall confidence: high | medium | low
 
 Localization (N=<count>):
-  src/navigator_eventbus/bus.py::publish  (lines 47-89) -- entrypoint  [F001, F003]
-  src/navigator_eventbus/dlq.py::retry  (lines 142-160) -- retry handler  [F003]
+  app/modules/nextstop/pdf.py::generate_pdf  (lines 47-89) — entrypoint  [F001, F003]
+  app/modules/nextstop/pdf.py::render_chunk  (lines 142-160) — chunk renderer  [F003]
   ...
 
 Top hypothesis:
-  -> "<hypothesis 1 statement>"
+  → "<hypothesis 1 statement>"
     Confidence: medium
     Supporting: F002, F005
     Reasoning: <one sentence>
 
 Confidence map:
-  <claim> [high]   -- directly cited
-  <claim> [high]
-  <claim> [medium] -- inferred
-  <claim> [medium]
-  <claim> [low]    -- weakly supported
+  ✓ <claim> [high]   ← directly cited
+  ✓ <claim> [high]
+  ◐ <claim> [medium] ← inferred
+  ◐ <claim> [medium]
+  ◌ <claim> [low]    ← weakly supported
 
 Unknowns the codebase couldn't answer (<count>):
   U1: <question>
@@ -308,14 +472,14 @@ Validate? [y / refine-research / refine-synthesis / abort]
 
 Update `state.json`: `phase: "review_gate"` (and `qa_pending` after).
 
-### 7. Phase 5 -- Targeted Q&A (Conditional)
+### 7. Phase 5 — Targeted Q&A (Conditional)
 
 Only run if `synthesis.unknowns.length > 0` AND `--no-gate` is not set.
 
 For each unknown, ask **one** question:
 
 ```
-U<N>: <question text>
+❓ U<N>: <question text>
 
 Context: this would resolve claim(s) <Cx, Cy>.
 
@@ -323,7 +487,7 @@ Plausible answers (pick one or write your own):
   a) <answer-1>
   b) <answer-2>
   c) <answer-3>
-  d) (other -- type your answer)
+  d) (other — type your answer)
 ```
 
 Wait for user response. Persist answers into `synthesis.json` under
@@ -336,24 +500,24 @@ Update `state.json`:
 
 If `--no-gate` is set OR there are zero unknowns, set `phases.qa.status: "skipped"` with reason.
 
-### 8. Phase 6 -- Render the Enriched Proposal
+### 8. Phase 6 — Render the Enriched Proposal
 
 #### 8a. Generate slug
 
-Build a kebab-case slug from the source summary. For ticket sources, prepend
-the key: `<ticket-key>-<slug>`. Examples:
-- `feat-312-eventbus-core-extraction`
-- `dlq-retry-handler-fix`
+Build a kebab-case slug from the source summary. For Jira sources, prepend
+the key: `<jira-key>-<slug>`. Examples:
+- `nav-8421-nextstop-pdf-generation-bug`
+- `redis-token-cache-invalidation`
 
 #### 8b. Render via template
 
 Read `sdd/templates/proposal.md` and fill it from:
-- `state.json` -> frontmatter (id, title, type, mode, status, source, base_branch, confidence)
-- `source.md` -> Section 0 Origin
-- `synthesis.json` -> Section 1 Synthesis Summary, Section 2 Codebase Findings, Section 3 Hypothesis/Scope, Section 4 Confidence Map
-- `synthesis.json.unknowns` (with user answers) -> Section 5 Open Questions
-- `synthesis.json.recommended_next_command` -> Section 6 Recommended Next Step
-- `state.json` paths -> Section 7 Research Audit
+- `state.json` → frontmatter (id, title, type, mode, status, source, base_branch, confidence)
+- `source.md` → §0 Origin
+- `synthesis.json` → §1 Synthesis Summary, §2 Codebase Findings, §3 Hypothesis/Scope, §4 Confidence Map
+- `synthesis.json.unknowns` (with user answers) → §5 Open Questions
+- `synthesis.json.recommended_next_command` → §6 Recommended Next Step
+- `state.json` paths → §7 Research Audit
 
 Write to `sdd/proposals/<slug>.proposal.md`.
 
@@ -361,24 +525,27 @@ Set frontmatter:
 - `status: discussion` if any unknowns remain unresolved
 - `status: review` if all unknowns resolved but user hasn't accepted
 - `status: accepted` only if the user explicitly says "accept" at the final summary
+- `projects` / `tags` (FEAT-576): `projects` from §2.1 Localization paths
+  (same mapping as `/sdd-brainstorm` §10; vocabulary `KNOWN_PROJECTS` in
+  `scripts/sdd/sdd_meta.py`, unknown values warn); `tags`: 2–6 kebab-case keywords.
 
 Update `state.json`:
 - `phases.output.proposal_path: "sdd/proposals/<slug>.proposal.md"`
 - `phase: "proposal_drafted"`
 
-### 9. Phase 7 -- Commit & Recommend Next
+### 9. Phase 7 — Commit & Recommend Next
 
 #### 9a. Commit the proposal
 
 ```bash
 # Unstage everything first to ensure a clean staging area
 git reset HEAD
-# Stage ONLY proposal + state files -- NEVER use "git add ." or "git add -A"
+# Stage ONLY proposal + state files — NEVER use "git add ." or "git add -A"
 git add sdd/proposals/<slug>.proposal.md sdd/state/<FEAT-ID>/
 # Verify staging
 git diff --cached --name-only
 # If ANY unrelated files appear, run "git reset HEAD" and start over
-git commit -m "sdd: research-grounded proposal for <FEAT-ID> -- <one-line>"
+git commit -m "sdd: research-grounded proposal for <FEAT-ID> — <one-line>"
 ```
 
 Update `state.json`:
@@ -390,7 +557,7 @@ Update `state.json`:
 Use `synthesis.recommended_next_command` to render the suggestion:
 
 ```
-Proposal saved and committed: sdd/proposals/<slug>.proposal.md
+✅ Proposal saved and committed: sdd/proposals/<slug>.proposal.md
 
    FEAT-ID:    FEAT-XXX
    Mode:       investigation | enrichment
@@ -398,34 +565,36 @@ Proposal saved and committed: sdd/proposals/<slug>.proposal.md
    Audit:      sdd/state/FEAT-XXX/
 
 Recommended next step:
-  -> /sdd-spec FEAT-XXX
+  → /sdd-spec FEAT-XXX
     Rationale: <synthesis.recommended_next_command.rationale>
 
 Alternatives:
-  -> /sdd-brainstorm FEAT-XXX  (if you want to explore alternative architectures)
-  -> /sdd-task FEAT-XXX        (if the fix is trivial -- single file)
-  -> manual review             (research was truncated; review state.json)
+  → /sdd-brainstorm FEAT-XXX  (if you want to explore alternative architectures)
+  → /sdd-task FEAT-XXX        (if the fix is trivial — single file)
+  → manual review             (research was truncated; review state.json)
 ```
 
-### Step R -- Resume an Interrupted Run
+### Step R — Resume an Interrupted Run
 
 If `--resume <FEAT-ID>` is set:
 
 1. Read `sdd/state/<FEAT-ID>/state.json`.
 2. Inspect `phase` and `resume_hint.next_phase`.
 3. Re-enter the corresponding step:
-   - `source_resolved` -> Step 3 (plan generation)
-   - `plan_approved` -> Step 4 (research execution)
-   - `research_complete` -> Step 5 (synthesis)
-   - `synthesis_complete` -> Step 6 (review gate)
-   - `qa_complete` -> Step 8 (render)
-   - `proposal_drafted` -> Step 9 (commit)
+   - `source_resolved` → Step 3 (plan generation)
+   - `plan_approved` → Step 4 (research execution)
+   - `research_complete` → Step 5 (synthesis)
+   - `synthesis_complete` → Step 6 (review gate)
+   - `qa_complete` → Step 8 (render)
+   - `proposal_drafted` → Step 9 (commit)
 4. If a phase is in `running` status (orphaned from a crash), restart **that
    phase** from scratch (don't try to recover partial state for it).
+   Exception: Phase 2 (research) that ran in parallel resumes per lane — follow §4.0 **Resume**,
+   never restart-from-scratch (that would discard completed lanes' findings).
 
 Print:
 ```
-Resuming FEAT-XXX from phase: <phase>
+↻ Resuming FEAT-XXX from phase: <phase>
   Last activity: <updated_at>
   Next action: <resume_hint.next_action>
 ```
@@ -433,7 +602,7 @@ Resuming FEAT-XXX from phase: <phase>
 ## Output
 
 ```
-Proposal saved and committed: sdd/proposals/<slug>.proposal.md
+✅ Proposal saved and committed: sdd/proposals/<slug>.proposal.md
 
    FEAT-ID:           FEAT-XXX
    Mode:              investigation
@@ -441,10 +610,11 @@ Proposal saved and committed: sdd/proposals/<slug>.proposal.md
    Findings:           11 files read, 9 grep, 3 git
    Synthesis:          4 high-confidence claims, 3 medium, 1 low
    Unknowns resolved:  2 / 2
+   Projects: <list>   Tags: <list>
 
 Next steps:
-  -> /sdd-spec FEAT-XXX     (recommended -- high-confidence localization)
-  -> /sdd-brainstorm FEAT-XXX  (alternative -- explore architectural options)
+  → /sdd-spec FEAT-XXX     (recommended — high-confidence localization)
+  → /sdd-brainstorm FEAT-XXX  (alternative — explore architectural options)
 ```
 
 ## How `/sdd-spec` and `/sdd-brainstorm` Consume This Document
@@ -452,17 +622,17 @@ Next steps:
 The enriched proposal is designed as a drop-in replacement for either a
 brainstorm or a free-form proposal in the existing pipeline. Mappings:
 
-| Proposal section              | -> `/sdd-spec` consumes as              |
+| Proposal section              | → `/sdd-spec` consumes as              |
 |-------------------------------|----------------------------------------|
-| Section 0 Origin              | Spec Metadata (ticket key, source)     |
-| Section 1 Synthesis Summary   | Spec Section 1 Motivation              |
-| Section 2.1 Localization      | Spec Section 6 Codebase Contract (verified)   |
-| Section 2.2 Constraints       | Spec Section 5 Acceptance Criteria + Section 7 Patterns |
-| Section 2.3 Recent History    | Spec Section 6 Codebase Contract (Recent Activity) |
-| Section 3 Hypothesis / Scope  | Spec Section 2 Architectural Design           |
-| Section 4 Confidence Map      | Spec Section 8 Open Questions (low-confidence items) |
-| Section 5 Open Questions (resolved)  | Spec Section 8 Open Questions (`[x]`)         |
-| Section 5 Open Questions (unresolved)| Spec Section 8 Open Questions (`[ ]`)         |
+| §0 Origin                     | Spec Metadata (Jira key, source)       |
+| §1 Synthesis Summary          | Spec §1 Motivation                     |
+| §2.1 Localization             | Spec §6 Codebase Contract (verified)   |
+| §2.2 Constraints              | Spec §5 Acceptance Criteria + §7 Patterns |
+| §2.3 Recent History           | Spec §6 Codebase Contract (Recent Activity) |
+| §3 Hypothesis / Scope         | Spec §2 Architectural Design           |
+| §4 Confidence Map             | Spec §8 Open Questions (low-confidence items) |
+| §5 Open Questions (resolved)  | Spec §8 Open Questions (`[x]`)         |
+| §5 Open Questions (unresolved)| Spec §8 Open Questions (`[ ]`)         |
 
 `/sdd-spec` reads the proposal's frontmatter `research_state` to access the
 full state for re-verification of the codebase contract.
@@ -471,9 +641,9 @@ full state for re-verification of the codebase contract.
 
 | Aspect                  | `/sdd-brainstorm`        | `/sdd-fromjira`            | `/sdd-proposal` (this)         |
 |-------------------------|--------------------------|----------------------------|--------------------------------|
-| Order                   | Q&A -> research           | Ticket fetch -> Q&A -> research| Research -> synthesis -> Q&A     |
-| When to use             | Greenfield features      | Ticket-seeded brainstorm   | Sparse tickets / bugs          |
-| Output                  | Brainstorm w/ 3+ options | Brainstorm w/ ticket context | Single-hypothesis proposal     |
+| Order                   | Q&A → research           | Jira fetch → Q&A → research| Research → synthesis → Q&A     |
+| When to use             | Greenfield features      | Jira-seeded brainstorm     | Sparse tickets / bugs          |
+| Output                  | Brainstorm w/ 3+ options | Brainstorm w/ Jira context | Single-hypothesis proposal     |
 | Hallucination defense   | Code Context section     | Code Context section       | Lint + finding ID grounding    |
 | Confidence reporting    | Implicit                 | Implicit                   | Explicit confidence map        |
 | Resumability            | None                     | None                       | Full state.json checkpoints    |
@@ -481,13 +651,13 @@ full state for re-verification of the codebase contract.
 | Routes to               | `/sdd-spec`              | `/sdd-spec`                | `/sdd-spec` OR `/sdd-brainstorm` (decided by confidence) |
 
 **When to pick which**:
-- **`/sdd-proposal`** -- the source is a thin ticket, a bug report, or any
+- **`/sdd-proposal`** — the source is a thin Jira ticket, a bug report, or any
   request where the codebase has more context than the requester provided.
   This is the new default entry point for tickets.
-- **`/sdd-brainstorm`** -- truly greenfield features with no existing code to
+- **`/sdd-brainstorm`** — truly greenfield features with no existing code to
   investigate (e.g., "add a billing module from scratch").
-- **`/sdd-fromjira`** -- kept for backward compatibility; superseded by
-  `/sdd-proposal <TICKET_KEY>` for most uses.
+- **`/sdd-fromjira`** — kept for backward compatibility; superseded by
+  `/sdd-proposal NAV-XXXX` for most uses.
 
 ## Reference
 
@@ -495,7 +665,6 @@ full state for re-verification of the codebase contract.
 - State schema:             `sdd/templates/state.schema.json`
 - Synthesis prompt:         `sdd/templates/synthesis.prompt.md`
 - Research-plan prompt:     `sdd/templates/research_plan.prompt.md`
-- Research-plan schema:     `sdd/templates/research_plan.schema.json`
 - Finding digest template:  `sdd/templates/finding.md`
 - SDD methodology:          `sdd/WORKFLOW.md`
 - Worktree policy:          `CLAUDE.md` (section "Worktree Policy")

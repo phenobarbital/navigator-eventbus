@@ -1,7 +1,7 @@
 """navigator_eventbus.brokers — internal port of navigator.brokers (FEAT-316).
 
 Base abstractions (``BaseConnection``, ``BrokerConsumer``, ``BrokerProducer``,
-``BaseWrapper``), the ``DataSerializer`` utility, and the concrete Redis /
+``BrokerManager``, ``BaseWrapper``), the ``DataSerializer`` utility, and the concrete Redis /
 RabbitMQ / SQS broker implementations live under this package.
 
 Only the base abstractions are re-exported at the top level; the concrete
@@ -11,16 +11,20 @@ optional dependencies installed (``aiormq``, ``aioboto3``, ...) — import the
 subpackages directly, e.g. ``from navigator_eventbus.brokers.redis import
 RedisConnection``.
 """
-from .connection import BaseConnection
+
+from .connection import BaseConnection, MessageCallback
 from .consumer import BrokerConsumer
+from .manager import BrokerManager
 from .producer import BrokerProducer
 from .serializers import DataSerializer
 from .wrapper import BaseWrapper
 
 __all__ = [
     "BaseConnection",
+    "MessageCallback",
     "BrokerConsumer",
     "BrokerProducer",
+    "BrokerManager",
     "BaseWrapper",
     "DataSerializer",
 ]

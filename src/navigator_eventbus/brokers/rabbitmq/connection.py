@@ -8,11 +8,13 @@ Desacoples: the DSN is built locally from navconfig
 ValidationError`` handling is replaced with a generic ``Exception`` catch
 that logs a warning.
 """
+
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import is_dataclass
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Callable, Coroutine, Optional, Union
 
 import aiormq
 from aiormq.abc import AbstractChannel, AbstractConnection
@@ -21,8 +23,23 @@ from datamodel import BaseModel
 from navigator_eventbus.serialization import dumps, loads
 
 from .._conf import rabbitmq_dsn as default_rabbitmq_dsn
-from ..connection import BaseConnection
+from ..connection import BaseConnection, MessageCallback
+from ..exceptions import RejectDelivery
 from ..wrapper import BaseWrapper
+
+__all__ = ["RabbitMQConnection", "RejectDelivery"]
+
+
+def _require_delivery_tag(message: "aiormq.abc.DeliveredMessage") -> int:
+    """Return the delivery tag of *message*.
+
+    Raises:
+        RuntimeError: When the broker delivered a message without a tag.
+    """
+    tag = message.delivery_tag
+    if tag is None:
+        raise RuntimeError("Delivered message carries no delivery_tag")
+    return tag
 
 
 class RabbitMQConnection(BaseConnection):
@@ -41,8 +58,16 @@ class RabbitMQConnection(BaseConnection):
                 navconfig-built ``rabbitmq_dsn`` when omitted.
             timeout: Connection timeout, in seconds.
             **kwargs: Forwarded to :class:`BaseConnection`.
+
+        Raises:
+            TypeError: If *credentials* is neither ``None`` nor a DSN string.
         """
-        self._dsn = credentials if credentials is not None else default_rabbitmq_dsn
+        if credentials is not None and not isinstance(credentials, str):
+            raise TypeError(
+                "RabbitMQConnection expects a DSN string as credentials, "
+                f"got {type(credentials).__name__}"
+            )
+        self._dsn: str = credentials if credentials is not None else default_rabbitmq_dsn
         super().__init__(credentials=credentials, timeout=timeout, **kwargs)
         self._connection: Optional[AbstractConnection] = None
         self._channel: Optional[AbstractChannel] = None
@@ -56,11 +81,12 @@ class RabbitMQConnection(BaseConnection):
         try:
             self.logger.debug(f":: Connecting to RabbitMQ: {self._dsn}")
             async with self._lock:
-                self._connection = await asyncio.wait_for(
+                connection = await asyncio.wait_for(
                     aiormq.connect(self._dsn), timeout=self._timeout
                 )
+                self._connection = connection
                 self.reconnect_attempts = 0
-                self._channel = await self._connection.channel()
+                self._channel = await connection.channel()
                 if not self._monitor_task or self._monitor_task.done():
                     await self._start_connection_monitor()
         except asyncio.TimeoutError:
@@ -156,14 +182,83 @@ class RabbitMQConnection(BaseConnection):
         """Ensure that the specified exchange exists in RabbitMQ."""
         await self.create_exchange(exchange_name, exchange_type, **kwargs)
 
+    def _require_channel(self) -> AbstractChannel:
+        """Return the open channel, or raise if the connection has none.
+
+        Raises:
+            RuntimeError: When no channel is open.
+        """
+        if self._channel is None:
+            raise RuntimeError("RabbitMQ channel is not open")
+        return self._channel
+
+    async def ensure_queue(
+        self,
+        queue_name: str,
+        exchange_name: Optional[str] = None,
+        routing_key: Optional[str] = None,
+        durable: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        """Declare *queue_name* and, when *exchange_name* is given, bind it.
+
+        Args:
+            queue_name: Queue to declare.
+            exchange_name: Exchange to bind the queue to; when falsy the queue
+                is only declared.
+            routing_key: Binding key; ``None`` binds with ``""``.
+            durable: Whether the queue survives a broker restart.
+            **kwargs: Extra queue arguments (``x-dead-letter-exchange`` …).
+        """
+        await self.ensure_connection()
+        channel = self._require_channel()
+        await channel.queue_declare(
+            queue=queue_name,
+            durable=durable,
+            arguments=kwargs or None,
+        )
+        if exchange_name:
+            await channel.queue_bind(
+                queue=queue_name,
+                exchange=exchange_name,
+                routing_key=routing_key or "",
+            )
+        self.logger.info("Queue '%s' ensured (exchange=%r).", queue_name, exchange_name)
+
+    async def reject_message(self, message: Any, requeue: bool = False) -> None:
+        """Negatively acknowledge *message* (``basic_nack``).
+
+        Args:
+            message: The ``aiormq.abc.DeliveredMessage`` to reject.
+            requeue: Whether the broker should requeue the message.
+        """
+        delivery_tag = _require_delivery_tag(message)
+        await self._require_channel().basic_nack(delivery_tag, requeue=requeue)
+        self.logger.debug("Message rejected: %s (requeue=%s)", delivery_tag, requeue)
+
     async def publish_message(
         self,
         body: Union[str, list, dict, Any],
-        queue_name: str,
-        routing_key: str,
+        queue_name: Optional[str] = None,
+        routing_key: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
-        """Publish a message to a RabbitMQ exchange."""
+        """Publish a message to a RabbitMQ exchange.
+
+        Args:
+            body: Payload; dict/list → JSON, dataclass/model → jsonpickle,
+                ``BaseWrapper`` → cloudpickle, anything else → ``str``.
+            queue_name: Target exchange name (declared on demand).
+            routing_key: AMQP routing key.
+            **kwargs: Extra ``basic_publish`` arguments; ``headers`` is merged.
+
+        Raises:
+            ValueError: If *queue_name* or *routing_key* is ``None``.
+        """
+        if queue_name is None or routing_key is None:
+            raise ValueError(
+                "publish_message() requires queue_name (exchange) and routing_key"
+            )
         await self.ensure_connection()
         # Ensure the exchange exists before publishing
         await self.ensure_exchange(queue_name)
@@ -188,7 +283,8 @@ class RabbitMQConnection(BaseConnection):
             body = str(body)
             properties_kwargs["content_type"] = "text/plain"
         try:
-            await self._channel.basic_publish(
+            channel = self._require_channel()
+            await channel.basic_publish(
                 body.encode("utf-8"),
                 exchange=queue_name,
                 routing_key=routing_key,
@@ -201,14 +297,19 @@ class RabbitMQConnection(BaseConnection):
     async def process_message(
         self,
         body: bytes,
-        properties: "aiormq.spec.Basic.Properties",
-    ) -> str:
+        properties: Optional["aiormq.spec.Basic.Properties"] = None,
+    ) -> Any:
         """Process (decode) the message received by the consumer.
 
         Decode failures are logged as a warning and the raw body string is
         returned — no navigator-specific ``ValidationError`` handling.
+
+        Args:
+            body: Raw AMQP body.
+            properties: AMQP properties; ``None`` means empty properties.
         """
-        content_type = properties.content_type or "text/plain"
+        props = properties or aiormq.spec.Basic.Properties()
+        content_type = props.content_type or "text/plain"
         body_str = body.decode("utf-8")
         if content_type == "application/json":
             try:
@@ -235,47 +336,50 @@ class RabbitMQConnection(BaseConnection):
 
     def wrap_callback(
         self,
-        callback: Callable[["aiormq.abc.DeliveredMessage", str], Awaitable[None]],
+        callback: MessageCallback,
         requeue_on_fail: bool = False,
         max_retries: int = 3,
-    ) -> Callable:
+    ) -> Callable[["aiormq.abc.DeliveredMessage"], Coroutine[Any, Any, None]]:
         """Wrap the user-provided callback to handle decoding and ack."""
 
         async def wrapped_callback(message: "aiormq.abc.DeliveredMessage") -> None:
+            delivery_tag = _require_delivery_tag(message)
+            channel = self._require_channel()
             try:
-                properties = (
-                    message.header.properties or aiormq.spec.Basic.Properties()
-                )
+                properties = message.header.properties or aiormq.spec.Basic.Properties()
                 body = await self.process_message(message.body, properties)
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(message, body)
-                else:
-                    callback(message, body)
+                result = callback(message, body)
+                if inspect.isawaitable(result):
+                    await result
                 # Acknowledge the message to indicate it has been processed
-                await self._channel.basic_ack(message.delivery_tag)
-                self.logger.debug(f"Message acknowledged: {message.delivery_tag}")
+                await channel.basic_ack(delivery_tag)
+                self.logger.debug(f"Message acknowledged: {delivery_tag}")
+            except RejectDelivery as reject:
+                # The callback asked for a non-requeued rejection: settle once
+                # and return — no ack, no retry/republish (FEAT-431 Module 4).
+                self.logger.warning("Message %s rejected: %s", delivery_tag, reject)
+                await self.reject_message(message, requeue=False)
+                return
             except Exception as e:
                 self.logger.warning(f"Error processing message: {e}")
                 # Get retry count from message properties headers
-                properties = (
-                    message.header.properties or aiormq.spec.Basic.Properties()
-                )
+                properties = message.header.properties or aiormq.spec.Basic.Properties()
                 headers = dict(properties.headers or {})
-                retry_count = headers.get("x-retry", 0)
-                if isinstance(retry_count, bytes):
-                    retry_count = int(retry_count.decode())
-                elif isinstance(retry_count, str):
-                    retry_count = int(retry_count)
+                raw_retry = headers.get("x-retry", 0)
+                if isinstance(raw_retry, bytes):
+                    retry_count = int(raw_retry.decode())
+                elif isinstance(raw_retry, (str, int, float)):
+                    retry_count = int(raw_retry)
                 else:
-                    retry_count = int(retry_count)
+                    retry_count = 0
                 retry_count += 1
                 if retry_count <= max_retries:
                     self.logger.info(
-                        f"Retrying message {message.delivery_tag}, "
+                        f"Retrying message {delivery_tag}, "
                         f"attempt {retry_count}/{max_retries}"
                     )
                     # Optionally, reject the message and requeue it
-                    await self._channel.basic_nack(message.delivery_tag, requeue=False)
+                    await channel.basic_nack(delivery_tag, requeue=False)
                     # Republish the message with incremented retry count
                     new_headers = headers.copy()
                     new_headers["x-retry"] = str(retry_count)
@@ -294,42 +398,56 @@ class RabbitMQConnection(BaseConnection):
                         user_id=properties.user_id,
                         app_id=properties.app_id,
                     )
-                    await self._channel.basic_publish(
-                        exchange=message.delivery.exchange,
-                        routing_key=message.delivery.routing_key,
+                    await channel.basic_publish(
+                        exchange=getattr(message.delivery, "exchange", "") or "",
+                        routing_key=getattr(message.delivery, "routing_key", "") or "",
                         body=message.body,
                         properties=new_properties,
                     )
                 else:
                     self.logger.error(
                         f"Max retries exceeded for message "
-                        f"{message.delivery_tag}. Discarding message."
+                        f"{delivery_tag}. Discarding message."
                     )
                     # Reject the message without requeueing
-                    await self._channel.basic_nack(message.delivery_tag, requeue=False)
+                    await channel.basic_nack(delivery_tag, requeue=False)
 
         return wrapped_callback
 
     async def consume_messages(
         self,
         queue_name: str,
-        callback: Callable[["aiormq.abc.DeliveredMessage", str], Awaitable[None]],
+        callback: MessageCallback,
         prefetch_count: int = 1,
+        **kwargs: Any,
     ) -> None:
-        """Consume messages from a queue."""
+        """Consume messages from a queue.
+
+        Args:
+            queue_name: Queue to declare and consume from.
+            callback: Handler invoked as ``callback(message, body)``.
+            prefetch_count: AMQP QoS prefetch.
+            **kwargs: Forwarded to ``basic_consume`` (same as
+                :meth:`RMQConsumer.subscribe_to_events`).
+        """
         await self.ensure_connection()
         try:
+            channel = self._require_channel()
             # Ensure the queue exists
-            await self._channel.queue_declare(queue=queue_name, durable=True)
+            await channel.queue_declare(queue=queue_name, durable=True)
 
             # Set QoS (Quality of Service) settings
-            await self._channel.basic_qos(prefetch_count=prefetch_count)
+            await channel.basic_qos(prefetch_count=prefetch_count)
 
             # Start consuming messages from the queue
-            await self._channel.basic_consume(
+            consumer_tag = await channel.basic_consume(
                 queue=queue_name,
                 consumer_callback=self.wrap_callback(callback),
+                **kwargs,
             )
+            tags = getattr(self, "_consumer_tags", None)
+            if isinstance(tags, list) and getattr(consumer_tag, "consumer_tag", None):
+                tags.append(consumer_tag.consumer_tag)
             self.logger.info(f"Started consuming messages from queue '{queue_name}'.")
         except Exception as e:
             self.logger.error(f"Error consuming messages: {e}")

@@ -13,6 +13,12 @@ source:
   summary_oneline: <≤120 chars>
 overall_confidence: high | medium | low
 base_branch: dev
+# projects: parts of the codebase this doc concerns. Use `packages/*` dir names
+#   (ai-parrot, ai-parrot-server, parrot-formdesigner, …) or an area
+#   (sdd-tooling, dev-loop, admin-ui, docs, ci). Unknown values warn, not fail.
+projects: []
+# tags: free-form kebab-case keywords for organizing specs (e.g. memory, mcp).
+tags: []
 research_state: sdd/state/FEAT-XXX/
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -84,7 +90,7 @@ Conventions, contracts, or downstream callers any solution must respect.
   *Implication*: regressions can land silently in `dev`.
   *Evidence*: F006
 
-- **Async-first convention.** navigator-eventbus conventions require async public
+- **Async-first convention.** AI-Parrot conventions require async public
   methods; this module recently migrated.
   *Implication*: rolling back to sync is not an option.
   *Evidence*: F002
