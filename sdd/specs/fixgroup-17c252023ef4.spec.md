@@ -336,6 +336,7 @@ when it is a coroutine."""
 
 tests:
 - tests/brokers/test_mypy_clean.py
+- tests/brokers/test_typing_guards.py
 - tests/brokers/test_connection.py
 - tests/brokers/test_consumer_fixes.py
 - tests/brokers/test_hook_rewire.py
