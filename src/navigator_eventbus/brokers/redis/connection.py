@@ -10,13 +10,15 @@ a warning) instead of a navigator-specific ``ValidationError``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from dataclasses import is_dataclass
-from typing import Any, Awaitable, Callable, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 from datamodel import BaseModel, Model
 from navconfig.logging import logging
 from redis import asyncio as aioredis
+from redis.typing import EncodableT, FieldT, KeyT, StreamIdT
 
 from navigator_eventbus.serialization import dumps, loads
 
@@ -26,7 +28,7 @@ from .._conf import (
     REDIS_BROKER_PASSWORD,
     REDIS_BROKER_PORT,
 )
-from ..connection import BaseConnection
+from ..connection import BaseConnection, MessageCallback
 from ..wrapper import BaseWrapper
 
 
@@ -88,6 +90,11 @@ class RedisConnection(BaseConnection):
             return
         try:
             self.logger.info("Connecting to Redis...")
+            if not isinstance(self._credentials, dict):
+                raise TypeError(
+                    "RedisConnection expects a credentials dict (host/port/password/db), "
+                    f"got {type(self._credentials).__name__}"
+                )
             self._connection = aioredis.Redis(
                 **self._credentials, decode_responses=True, encoding="utf-8"
             )
@@ -114,15 +121,26 @@ class RedisConnection(BaseConnection):
         self._connection = None
         self.logger.info("Disconnected from Redis.")
 
+    def _require_client(self) -> aioredis.Redis:
+        """Return the connected client.
+
+        Raises:
+            RuntimeError: When :meth:`connect` has not been called.
+        """
+        if self._connection is None:
+            raise RuntimeError("Redis client is not connected; call connect() first")
+        return self._connection
+
     async def ensure_group_exists(self) -> None:
         """Ensure the consumer group (and consumer) exist for the stream."""
+        client = self._require_client()
         try:
             # Create the stream if it doesn't exist
-            stream_exists = await self._connection.exists(self._queue_name)
+            stream_exists = await client.exists(self._queue_name)
             if not stream_exists:
-                await self._connection.xadd(self._queue_name, {"initial": "message"})
+                await client.xadd(self._queue_name, {"initial": "message"})
             # Try to create the group. This will fail if the group already exists.
-            await self._connection.xgroup_create(
+            await client.xgroup_create(
                 name=self._queue_name,
                 groupname=self._group_name,
                 id="0",
@@ -139,7 +157,7 @@ class RedisConnection(BaseConnection):
                 raise
         try:
             # create the consumer:
-            await self._connection.xgroup_createconsumer(
+            await client.xgroup_createconsumer(
                 self._queue_name, self._group_name, self._consumer_name
             )
             self.logger.debug(
@@ -158,7 +176,7 @@ class RedisConnection(BaseConnection):
         """Publish a message to the specified Redis Stream."""
         stream = queue_name or self._queue_name
         try:
-            message_data: Dict[str, Any] = {}
+            packed_body: Union[bytes, str]
             # Determine serialization method based on the type of 'body'
             if isinstance(body, (int, float, bool, type(None))):
                 # Use msgpack for primitives
@@ -189,10 +207,11 @@ class RedisConnection(BaseConnection):
                 packed_body = str(body)
                 content_type = "text/plain"
 
-            message_data["body"] = packed_body
-            message_data["ContentType"] = content_type
-
-            await self._connection.xadd(stream, message_data, nomkstream=False)
+            fields: Dict[FieldT, EncodableT] = {
+                "body": packed_body,
+                "ContentType": content_type,
+            }
+            await self._require_client().xadd(stream, fields, nomkstream=False)
             self.logger.info(f"Message published to stream '{stream}'.")
         except Exception as e:
             self.logger.error(f"Failed to publish message to stream '{stream}': {e}")
@@ -205,6 +224,8 @@ class RedisConnection(BaseConnection):
         returned — no navigator-specific ``ValidationError`` handling.
         """
         body = message_data.get("body")
+        if body is None:
+            return None
         content_type = message_data.get("ContentType", "text/plain")
         try:
             if content_type == "application/json":
@@ -233,7 +254,7 @@ class RedisConnection(BaseConnection):
     async def consume_messages(
         self,
         queue_name: Optional[str],
-        callback: Callable[[Dict[str, Any], str], Awaitable[None]],
+        callback: MessageCallback,
         count: int = 1,
         block: int = 1000,
         **kwargs: Any,
@@ -253,8 +274,9 @@ class RedisConnection(BaseConnection):
         try:
             # Clean up old messages before starting
             await self.cleanup_old_messages(stream)
+            client = self._require_client()
             while True:
-                response = await self._connection.xreadgroup(
+                response = await client.xreadgroup(
                     groupname=self._group_name,
                     consumername=consumer_name,
                     streams={stream: ">"},
@@ -271,12 +293,11 @@ class RedisConnection(BaseConnection):
                                 message_data
                             )
                             data = {"message_id": message_id, "data": message_data}
-                            if asyncio.iscoroutinefunction(callback):
-                                await callback(data, processed_message)
-                            else:
-                                callback(data, processed_message)
+                            result = callback(data, processed_message)
+                            if inspect.isawaitable(result):
+                                await result
                             # Acknowledge the message
-                            await self._connection.xack(
+                            await client.xack(
                                 stream, self._group_name, message_id
                             )
                             self.logger.info(f"Message {message_id} acknowledged.")
@@ -299,7 +320,7 @@ class RedisConnection(BaseConnection):
             # Convert it to a Redis Stream ID format (timestamp-part-sequence)
             seven_days_ago_id = f"{seven_days_ago}-0"
             # Use XTRIM with minid to remove messages older than the calculated timestamp
-            await self._connection.xtrim(stream, minid=seven_days_ago_id)
+            await self._require_client().xtrim(stream, minid=seven_days_ago_id)
             self.logger.info(f"Cleaned up old messages from stream {stream}")
         except Exception as e:
             self.logger.error(f"Error cleaning up old messages: {e}")
@@ -307,7 +328,7 @@ class RedisConnection(BaseConnection):
     async def reclaim_pending_messages(
         self,
         queue_name: str,
-        callback: Callable,
+        callback: MessageCallback,
         *,
         min_idle_time: int = 30_000,
         count: int = 10,
@@ -331,7 +352,7 @@ class RedisConnection(BaseConnection):
             The number of messages claimed and redelivered.
         """
         try:
-            _, claimed_messages, _ = await self._connection.xautoclaim(
+            _, claimed_messages, _ = await self._require_client().xautoclaim(
                 queue_name,
                 self._group_name,
                 self._consumer_name,
@@ -350,10 +371,9 @@ class RedisConnection(BaseConnection):
                 body = await self.process_message(message_data)
             except Exception:
                 body = message_data
-            if asyncio.iscoroutinefunction(callback):
-                await callback(message_id, body)
-            else:
-                callback(message_id, body)
+            result = callback(message_id, body)
+            if inspect.isawaitable(result):
+                await result
         return len(claimed_messages)
 
     # ------------------------------------------------------------------
@@ -380,8 +400,11 @@ class RedisConnection(BaseConnection):
             returned by the underlying ``XREAD`` command.
         """
         await self.ensure_connection()
-        return await self._connection.xread(
-            streams=streams, count=count, block=block
+        streams_arg: Dict[KeyT, StreamIdT] = {
+            key: last_id for key, last_id in streams.items()
+        }
+        return await self._require_client().xread(
+            streams=streams_arg, count=count, block=block
         ) or []
 
     async def xrange(
@@ -404,7 +427,7 @@ class RedisConnection(BaseConnection):
         """
         await self.ensure_connection()
         stream = stream or self._queue_name
-        return await self._connection.xrange(
+        return await self._require_client().xrange(
             stream, min=start, max=end, count=count
         )
 
@@ -428,7 +451,7 @@ class RedisConnection(BaseConnection):
         """
         await self.ensure_connection()
         stream = stream or self._queue_name
-        return await self._connection.xrevrange(
+        return await self._require_client().xrevrange(
             stream, max=start, min=end, count=count
         )
 
@@ -447,7 +470,7 @@ class RedisConnection(BaseConnection):
         """
         await self.ensure_connection()
         stream = stream or self._queue_name
-        return await self._connection.xinfo_stream(stream)
+        return await self._require_client().xinfo_stream(stream)
 
     async def xlen(
         self,
@@ -460,4 +483,4 @@ class RedisConnection(BaseConnection):
         """
         await self.ensure_connection()
         stream = stream or self._queue_name
-        return await self._connection.xlen(stream)
+        return await self._require_client().xlen(stream)

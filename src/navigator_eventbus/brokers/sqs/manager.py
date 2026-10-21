@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable, Union
+from typing import Any
 
 from aiohttp import web
 
+from ..connection import MessageCallback
 from ..manager import BrokerManager
 from .consumer import SQSConsumer
 
@@ -28,7 +29,7 @@ class SQSManager(BrokerManager, SQSConsumer):
     async def subscribe_to_events(
         self,
         queue_name: str,
-        callback: Union[Callable, Awaitable],
+        callback: MessageCallback,
         max_messages: int = 10,
         wait_time: int = 10,
         idle_sleep: int = 5,

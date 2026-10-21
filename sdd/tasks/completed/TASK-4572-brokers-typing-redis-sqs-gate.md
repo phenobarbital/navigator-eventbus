@@ -374,8 +374,20 @@ regression net and must pass unchanged.
 
 *(Agent fills this in when done)*
 
-**Completed by**:
-**Date**:
-**Notes**:
+**Completed by**: agent:sdd-fix (Claude Fable 5.1, `/sdd-fix issue:b12a71083ca3`)
+**Date**: 2026-10-21
+**Notes**: Redis and SQS families typed (`_require_client()`, `_require_resource()`,
+`MessageCallback`, parity `wrap_callback` params, redis.typing maps). Validation:
+`mypy --follow-imports=silent src/navigator_eventbus/brokers src/navigator_eventbus/hooks/brokers`
+→ `Success: no issues found in 32 source files`; `mypy src/` → 2 errors, both outside the brokers
+layer (`evb.py:304`, `backends/redis_streams.py:741`; spec AC-2 ≤ 4); ruff clean; 32 tests across the
+Validation Commands; full CI command `pytest tests/ -x -q -m "not redis"` → 900 passed, 19 skipped
+(after installing the declared-but-missing `pytest-aiohttp` and `apscheduler` into the shared venv).
 
-**Deviations from spec**: none
+**Deviations from spec**:
+1. The gate test runs mypy with `--follow-imports=silent`: without it mypy also reports the two
+   unrelated errors in modules the hooks import (`evb.py`, `backends/redis_streams.py`), which is
+   exactly the "rest of `src/` still red" case the gate exists to be independent of (spec §2 item 5).
+   Spec AC-1 should be read with that flag.
+2. Sync/async callback dispatch uses `result = callback(...); if inspect.isawaitable(result): await result`
+   (same rationale as TASK-4571 deviation 2).

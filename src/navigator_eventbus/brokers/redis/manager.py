@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Optional
 
 from aiohttp import web
 
+from ..connection import MessageCallback
 from ..manager import BrokerManager
 from .consumer import RedisConsumer
 
@@ -31,7 +32,7 @@ class RedisManager(BrokerManager, RedisConsumer):
     async def subscribe_to_events(
         self,
         queue_name: Optional[str],
-        callback: Union[Callable, Awaitable],
+        callback: MessageCallback,
         **kwargs: Any,
     ) -> None:
         """Start a consumer task (see :class:`RedisConsumer`) and track it for shutdown."""

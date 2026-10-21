@@ -9,11 +9,14 @@ ya no depende del framework navigator externo para soporte de brokers.
 FEAT-431 keeps delivery settlement in the connection callback wrapper.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from navigator_eventbus.brokers.exceptions import RejectDelivery
 from navigator_eventbus.hooks.brokers.base import BaseBrokerHook
 from navigator_eventbus.hooks.models import BrokerHookConfig, HookType
+
+if TYPE_CHECKING:
+    from navigator_eventbus.brokers.rabbitmq import RabbitMQConnection
 
 
 class RabbitMQBrokerHook(BaseBrokerHook):
@@ -28,20 +31,33 @@ class RabbitMQBrokerHook(BaseBrokerHook):
         self._exchange_name = config.exchange_name
         self._exchange_type = config.exchange_type
         self._prefetch_count = config.prefetch_count
-        self._connection = None
+        self._connection: Optional["RabbitMQConnection"] = None
 
     async def connect(self) -> None:
         from navigator_eventbus.brokers.rabbitmq import RabbitMQConnection
 
-        self._connection = RabbitMQConnection(credentials=self._config.credentials)
-        await self._connection.connect()  # type: ignore[attr-defined]
+        # RabbitMQConnection takes a DSN string; the generic BrokerHookConfig
+        # carries a dict, so the DSN travels under its "dsn" key (or is omitted
+        # to use the navconfig RABBITMQ_* default).
+        credentials = self._config.credentials
+        dsn: Optional[str] = None
+        if credentials:
+            dsn = credentials.get("dsn")
+            if not isinstance(dsn, str):
+                raise TypeError(
+                    "RabbitMQBrokerHook: BrokerHookConfig.credentials must carry a "
+                    "'dsn' string (or be unset to use the configured default)"
+                )
+        connection = RabbitMQConnection(credentials=dsn)
+        await connection.connect()
+        self._connection = connection
         self.logger.info("RabbitMQ connection established")
         # Ensure exchange and queue exist
-        await self._connection.ensure_exchange(  # type: ignore[attr-defined]
+        await connection.ensure_exchange(
             exchange_name=self._exchange_name or self._queue_name,
             exchange_type=self._exchange_type,
         )
-        await self._connection.ensure_queue(  # type: ignore[attr-defined]
+        await connection.ensure_queue(
             queue_name=self._queue_name,
             exchange_name=self._exchange_name or self._queue_name,
             routing_key=self._routing_key,
@@ -53,7 +69,14 @@ class RabbitMQBrokerHook(BaseBrokerHook):
             self.logger.info("RabbitMQ connection closed")
 
     async def start_consuming(self) -> None:
-        await self._connection.consume_messages(  # type: ignore[attr-defined]
+        """Consume from the configured queue.
+
+        Raises:
+            RuntimeError: If :meth:`connect` has not run.
+        """
+        if self._connection is None:
+            raise RuntimeError("RabbitMQBrokerHook.connect() must run before start_consuming()")
+        await self._connection.consume_messages(
             queue_name=self._queue_name,
             callback=self._consumer_callback,
             prefetch_count=self._prefetch_count,

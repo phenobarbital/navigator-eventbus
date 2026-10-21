@@ -12,7 +12,7 @@ subpackages directly, e.g. ``from navigator_eventbus.brokers.redis import
 RedisConnection``.
 """
 
-from .connection import BaseConnection
+from .connection import BaseConnection, MessageCallback
 from .consumer import BrokerConsumer
 from .manager import BrokerManager
 from .producer import BrokerProducer
@@ -21,6 +21,7 @@ from .wrapper import BaseWrapper
 
 __all__ = [
     "BaseConnection",
+    "MessageCallback",
     "BrokerConsumer",
     "BrokerProducer",
     "BrokerManager",

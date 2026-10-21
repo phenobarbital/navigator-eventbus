@@ -11,11 +11,13 @@ argument``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from aiohttp import web
 from navconfig.logging import logging
 
+from ..connection import MessageCallback
 from ..consumer import BrokerConsumer
 from .connection import RedisConnection
 
@@ -29,7 +31,7 @@ class RedisConsumer(RedisConnection, BrokerConsumer):
         self,
         credentials: Optional[Union[str, dict]] = None,
         timeout: Optional[int] = 5,
-        callback: Optional[Union[Awaitable, Callable]] = None,
+        callback: Optional[MessageCallback] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Redis consumer.
@@ -70,16 +72,23 @@ class RedisConsumer(RedisConnection, BrokerConsumer):
 
     def wrap_callback(
         self,
-        callback: Callable[[Any, Any], Awaitable[None]],
+        callback: MessageCallback,
+        requeue_on_fail: bool = False,
+        max_retries: int = 3,
     ) -> Callable[[Any, Any], Awaitable[None]]:
-        """Wrap the user-provided callback for message handling."""
+        """Wrap the user-provided callback for message handling.
 
-        async def wrapped_callback(message_id, body):
+        ``requeue_on_fail`` and ``max_retries`` are accepted for interface parity
+        with :class:`~navigator_eventbus.brokers.consumer.BrokerConsumer` and
+        ignored: Redis Streams has no republish path, an unacknowledged entry
+        simply stays pending.
+        """
+
+        async def wrapped_callback(message_id: Any, body: Any) -> None:
             try:
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(message_id, body)
-                else:
-                    callback(message_id, body)
+                result = callback(message_id, body)
+                if inspect.isawaitable(result):
+                    await result
             except Exception as e:
                 self.logger.error(f"Error processing message {message_id}: {e}")
 
@@ -88,7 +97,7 @@ class RedisConsumer(RedisConnection, BrokerConsumer):
     async def event_subscribe(
         self,
         queue_name: Optional[str],
-        callback: Union[Callable, Awaitable],
+        callback: MessageCallback,
         **kwargs: Any,
     ) -> None:
         """Subscribe to a stream and consume messages via *callback*."""
@@ -101,7 +110,7 @@ class RedisConsumer(RedisConnection, BrokerConsumer):
     async def subscribe_to_events(
         self,
         queue_name: Optional[str],
-        callback: Union[Callable, Awaitable],
+        callback: MessageCallback,
         **kwargs: Any,
     ) -> None:
         """Subscribe to events from a specific stream in a background task."""

@@ -55,7 +55,7 @@ class MQTTDownlinkPublisher(RMQProducer):
 
     def __init__(
         self,
-        credentials: Union[str, dict] = None,
+        credentials: Optional[Union[str, dict]] = None,
         queue_size: Optional[int] = None,
         num_workers: Optional[int] = 4,
         timeout: Optional[int] = 5,

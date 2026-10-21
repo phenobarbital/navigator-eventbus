@@ -17,6 +17,11 @@ from navconfig.logging import logging
 
 from .serializers import DataSerializer
 
+#: A sync or async message handler. Backends invoke it as
+#: ``callback(message, body)`` (RabbitMQ / SQS) or ``callback(message_id, body)``
+#: (Redis Streams) and await the result when it is a coroutine.
+MessageCallback = Callable[..., Union[Awaitable[None], None]]
+
 
 class BaseConnection(ABC):
     """Manages connection and operations over Broker Services."""
@@ -45,8 +50,8 @@ class BaseConnection(ABC):
         """
         self._credentials = credentials
         self._timeout: Optional[int] = timeout
-        self._connection = None
-        self._monitor_task: Optional[Awaitable] = None
+        self._connection: Any = None
+        self._monitor_task: Optional["asyncio.Task[None]"] = None
         self.logger = logging.getLogger(self.__class__.__name__)
         self._queues: dict = {}
         self.reconnect_attempts = 0
@@ -56,7 +61,7 @@ class BaseConnection(ABC):
         self._serializer = DataSerializer()
         super().__init__(*args, **kwargs)
 
-    def get_connection(self) -> Optional[Union[Callable, Awaitable]]:
+    def get_connection(self) -> Any:
         """Return the underlying broker connection object.
 
         Raises:
@@ -108,15 +113,19 @@ class BaseConnection(ABC):
     async def consume_messages(
         self,
         queue_name: str,
-        callback: Callable,
+        callback: MessageCallback,
         **kwargs: Any,
     ) -> None:
         """Consume messages from the Broker Service."""
         raise NotImplementedError
 
     @abstractmethod
-    async def process_message(self, body: bytes, properties: Any) -> str:
-        """Process a message from the Broker Service."""
+    async def process_message(self, body: Any) -> Any:
+        """Decode one raw broker payload into a Python object.
+
+        Backends widen this signature with their own optional metadata
+        parameter (AMQP ``properties``, SQS ``attributes``).
+        """
         raise NotImplementedError
 
     async def start(self, app: web.Application) -> None:
