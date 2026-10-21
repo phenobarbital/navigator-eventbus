@@ -188,10 +188,10 @@ No new tests — `tests/test_package.py` covers the package import and version m
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+Implemented by gpt-5.6-luna (codex, 1 attempt); merged by sdd-worker.
 
-**Completed by**: <session or agent ID>
-**Date**: YYYY-MM-DD
-**Notes**:
+**Completed by**: gpt-5.6-luna (codex, 1 attempt)
+**Date**: 2026-10-20
+**Notes**: Validated manually with PYTHONPATH=src (the validation tool imports the primary checkout's editable src): test_package passed.
 
 **Deviations from spec**: none | describe if any

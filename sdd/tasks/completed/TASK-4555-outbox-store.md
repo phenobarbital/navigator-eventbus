@@ -345,10 +345,10 @@ async def test_outbox_satisfies_protocol(tmp_path): ...
 
 ## Completion Note
 
-*(Agent fills this in when done)*
+Implemented by sonnet (native, 1 attempt); merged by sdd-worker.
 
-**Completed by**: <session or agent ID>
-**Date**: YYYY-MM-DD
-**Notes**:
+**Completed by**: sonnet (native, 1 attempt)
+**Date**: 2026-10-20
+**Notes**: Validation via the coder_run_validation tool was red only because the harness imports the primary checkout's editable src (ImportError on new symbols). Run manually with PYTHONPATH=src: tests/lifecycle/test_registry_bus_hook.py tests/test_outbox.py tests/test_package.py -> 21 passed.
 
 **Deviations from spec**: none | describe if any
