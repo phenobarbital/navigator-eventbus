@@ -5,7 +5,7 @@
   "type": "feature",
   "base_branch": "dev",
   "created_at": "2026-10-20T23:13:09+00:00",
-  "completed_at": "2026-10-21T00:08:54+00:00",
+  "completed_at": "2026-10-21T00:18:18+00:00",
   "parallel_semantics": "exclusive",
   "validation_contract": "required",
   "test_contract": {
@@ -203,6 +203,27 @@
       "started_at": "2026-10-20T23:28:46+00:00",
       "completed_at": "2026-10-20T23:44:01+00:00",
       "file": "sdd/tasks/completed/TASK-4568-manager-integration-release.md",
+      "verification": "verified"
+    },
+    {
+      "id": "TASK-4569",
+      "slug": "manager-start-subscribe-cleanup",
+      "title": "Regression test: BrokerManager.start() cleans up when subscribe fails",
+      "feature_id": "FEAT-431",
+      "feature": "brokers-unified-manager",
+      "spec": "sdd/specs/brokers-unified-manager.spec.md",
+      "status": "done",
+      "priority": "medium",
+      "effort": "S",
+      "depends_on": [
+        "TASK-4564"
+      ],
+      "parallel": true,
+      "discovered_from": "issue:545bb0fa9305",
+      "assigned_to": "agent:sdd-fix",
+      "started_at": "2026-10-21T00:20:00+00:00",
+      "completed_at": "2026-10-21T00:18:18+00:00",
+      "file": "sdd/tasks/completed/TASK-4569-manager-start-subscribe-cleanup.md",
       "verification": "verified"
     }
   ]

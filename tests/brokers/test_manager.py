@@ -115,3 +115,27 @@ async def test_manager_stop_continues_when_stop_consuming_fails():
     await m.stop(None)
     assert m.calls.count("disconnect") == 1
     assert all(t.done() for t in m._workers)
+
+
+async def test_manager_start_cleans_up_when_subscribe_fails():
+    """Regression for issue:545bb0fa9305 (TASK-4569).
+
+    aiohttp may not run ``on_shutdown`` after a failed startup, so a
+    ``_subscribe`` failure inside ``start()`` must stop the workers and
+    disconnect before the error propagates.
+    """
+    m = DummyManager(num_workers=2)
+
+    async def boom(app):
+        m.calls.append("subscribe")
+        raise RuntimeError("subscribe failed")
+
+    m._subscribe = boom
+    with pytest.raises(RuntimeError, match="subscribe failed"):
+        await m.start(web.Application())
+    assert m.calls.count("connect") == 1
+    assert "stop_consuming" in m.calls
+    assert m.calls.count("disconnect") == 1
+    assert m.calls[-1] == "disconnect"
+    assert len(m._workers) == 2
+    assert all(t.done() for t in m._workers)
