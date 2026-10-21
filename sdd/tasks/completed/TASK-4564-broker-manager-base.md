@@ -379,10 +379,8 @@ See the blueprint test file. It covers spec §4 rows `test_manager_single_connec
 
 ## Completion Note
 
-*(Agent fills this in when done)*
-
-**Completed by**:
-**Date**:
-**Notes**:
+**Completed by**: sonnet (native)
+**Date**: 2026-10-21
+**Notes**: Merged. Verified locally with PYTHONPATH=worktree/src: tests/brokers 53 passed; only 2 pre-existing navconfig-env failures (fail on baseline).
 
 **Deviations from spec**: none

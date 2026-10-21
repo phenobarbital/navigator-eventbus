@@ -5,25 +5,26 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [0.4.0] — Unreleased
 
-Ships FEAT-711 (durable lifecycle fan-out).
+FEAT-431 — Unified Broker Manager + brokers hardening.
 
 ### Added
+- `BrokerManager` (`navigator_eventbus.brokers`) plus `RMQManager`, `RedisManager`, `SQSManager`
+  (from their subpackages): publish and consume over a single connection, `auto_subscribe` flag,
+  consumer-first shutdown.
+- `BrokerProducer(endpoint_path=...)`: configurable HTTP publish route (default unchanged).
+- `RabbitMQConnection.ensure_queue()` and `reject_message()`.
 
-- Registry `attach_bus`/`detach_bus` methods and a registry/subscription serializer hook.
-- `EventBus(backend=, transport=, publish_only=, outbox=)` configuration.
-- `OutboxStore`, `SqliteOutbox`, and `OutboxFullError`.
-- `BusCore(outbox=, publish_only=, relay_*)` configuration and `BusCore.stats()`.
+### Fixed
+- RabbitMQ consumer: an explicit `exchange_name` is no longer overwritten by `queue_name` (D1).
+- `RabbitMQBrokerHook.connect()` no longer raises `AttributeError`; hook failures settle once
+  (non-requeued nack, no ack/republish).
+- `queue_event()` no longer sleeps 100 ms per event.
 
-### Hardening
-
-- `SqliteOutbox` takes an exclusive file lock (`OutboxLockedError`), runs on a dedicated worker thread, and counts undecodable rows as `corrupt`.
-- The relay pass aborts on the first backend failure; `BusCore.stats()` gains `outbox_append_failed`.
-- `BUS_TRANSPORT` is case-insensitive; `BUS_OUTBOX_MAX_AGE` added; lifecycle bus-forward failures are logged.
-
-### Delivery contract
-
-- With an outbox configured, delivery from `emit` to a Streams consumer is **at-least-once**;
-  consumers dedup by `envelope.event_id`.
+### Changed
+- **Behaviour change** — `RMQConsumer.event_subscribe()` / `SQSConsumer.event_subscribe()` wrap the
+  callback once: callbacks now receive `(message, decoded_body)` as documented, instead of failing on
+  a double wrap. Callers that compensated for the double wrap (e.g. unpacking an extra layer) should
+  drop that workaround and accept `(message, body)` directly.
 
 ## [0.1.0] — Unreleased (pending tag + PyPI publish)
 

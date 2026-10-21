@@ -3,6 +3,7 @@
 Ported near-verbatim; no desacoples required beyond the shared
 ``SQSConnection`` changes.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,9 +58,7 @@ class SQSConsumer(SQSConnection, BrokerConsumer):
         callback: Union[Callable, Awaitable],
     ) -> None:
         """Subscribe to a queue and consume messages via *callback*."""
-        await self.consume_messages(
-            queue_name=queue_name, callback=self.wrap_callback(callback)
-        )
+        await self.consume_messages(queue_name=queue_name, callback=callback)
 
     async def subscribe_to_events(
         self,
