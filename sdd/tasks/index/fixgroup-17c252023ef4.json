@@ -74,7 +74,7 @@
       "feature_id": "FEAT-712",
       "feature": "fixgroup-17c252023ef4",
       "spec": "sdd/specs/fixgroup-17c252023ef4.spec.md",
-      "status": "pending",
+      "status": "in-progress",
       "priority": "medium",
       "effort": "M",
       "depends_on": [
@@ -82,8 +82,8 @@
       ],
       "parallel": true,
       "parallelism_notes": "Imports MessageCallback from TASK-4571 (src/navigator_eventbus/brokers/connection.py) and appends to tests/brokers/test_typing_guards.py created by TASK-4571; the mypy gate test needs TASK-4571's base/RabbitMQ fixes to pass.",
-      "assigned_to": null,
-      "started_at": null,
+      "assigned_to": "agent:sdd-fix",
+      "started_at": "2026-10-21T00:50:37+00:00",
       "completed_at": null,
       "file": "sdd/tasks/active/TASK-4572-brokers-typing-redis-sqs-gate.md",
       "discovered_from": "issue:b12a71083ca3"
