@@ -152,10 +152,10 @@ KeyedConsumer × N (any pod, no leader)
                                   → Lock(lock:<k>).acquire(blocking=False)
                                       fails → ack signal (duplicate, rule 3), next
                                   → head = ZRANGE key:<k> 0 0
+                                  → head expired (max_age)? → log "expiring" · await on_dlq · remove
+                                      (same MULTI as ack), next
                                   → key held / head waiting (wait_until > now) / head not due (due_ms > now)
                                       → release lock, ack signal, ensure ZADD delayed key=deadline, next
-                                  → head expired (max_age)? (only a pending head; never a waiting/held one)
-                                      → log "expiring" · await on_dlq · remove (same MULTI as ack), next
                                   → gen+1 on msg · return KeyedLease(key, message, lock, signal receipt, gen)
          outcome = handler(msg)   bounded by asyncio.wait_for(call_timeout_ms); KeyedConsumer extends
                                   lock + signal visibility every lock_ttl_ms/3
@@ -330,8 +330,7 @@ class KeyedConsumer:
           """Throttled (SET NX PX `recover`) re-signal of every key in `keys` that is not
           locked, not held and has no `delayed` entry. Any consumer may win; returns signals sent."""
       async def expire_head(self, key: str, message: KeyedMessage) -> bool:
-          """Only for a pending head (never waiting/held): when created_ms + max_age_ms < now,
-          log 'expiring', await on_dlq(...), remove in one MULTI. Returns True if expired."""
+          """When created_ms + max_age_ms < now: log 'expiring', await on_dlq(...), remove in one MULTI. Returns True if expired."""
   ```
 
 ### Module 3: KeyedConsumer
@@ -418,7 +417,6 @@ class KeyedConsumer:
 | `test_stale_apply_is_fenced` | M2 | A's lock expires between its token check and EXEC, B leases → A's `apply` raises `LeaseLost`, B's state intact (WATCH invalidation) |
 | `test_push_is_atomic` | M2 | push interrupted before EXEC → nothing written; re-push creates the full message |
 | `test_push_same_id_other_key_rejected` | M2 | ValueError |
-| `test_expiry_skips_waiting_and_held_heads` | M2 | a waiting or held head older than `max_age_ms` is not expired |
 | `test_exports_lazy` | M6 | `from navigator_eventbus.queues import KeyedQueue` resolves lazily, no redis import at package import |
 
 ### Integration Tests
@@ -583,6 +581,7 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 - [ ] Q1 — *Owner: Jesús*: should `KeyedQueue` also expose HTTP routes (a `QueueAPI` sibling) in 0.5.0, or stay in-process until a non-Python consumer needs it? Recommendation: in-process only; fieldsync's worker is Python.
 - [ ] Q2 — *Owner: Jesús*: default `max_attempts` — unlimited (0) so the caller's deadline rules apply, or a finite default like `max_receives=5`? Recommendation: 0; the pull plane's 5 is about poison messages, not about a downstream outage.
 - [ ] Q3 — *Owner: Jesús*: `wait` without `until_ms` relies entirely on a later push to the same key re-signalling. Keep that, or always add a safety deadline (`lock_ttl_ms × 10`)? Recommendation: always add the safety deadline.
+- [ ] Q4 — *Owner: Jesús* (v0.2 review): release number. 0.4.0 is already published (FEAT-431, tag `279b0d8`), so this spec now targets **0.5.0**; 0.4.1 is the alternative if you prefer a patch number.
 
 ---
 
@@ -609,4 +608,4 @@ Summary: **4** confirmed · **1** rejected · **1** escalated.
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 0.1 | 2026-10-29 | Claude (for Jesus Lara) | Initial draft from the FEAT-830 architecture review |
-| 0.2 | 2026-10-29 | Juan (with Claude; Codex cross-check) | Spec review fixes, design decisions unchanged: target **0.5.0** (0.4.0 already published); signal lifetime rules (holder keeps its signal, visibility > lock TTL, duplicates acked, no `receive()` while paused); `recover()` backstop for lost signals; `apply` fenced by token + generation in `WATCH`/`MULTI`; atomic `push`; `due_ms` enforces retry delays; `drain(key_prefix=)`; expiry only for pending heads; risks documented (re-push after ack, ordering scope, DLQ durability) |
+| 0.2 | 2026-10-29 | Juan (with Claude; Codex cross-check) | Spec review fixes, design decisions unchanged: target **0.5.0** (0.4.0 already published); signal lifetime rules (holder keeps its signal, visibility > lock TTL, duplicates acked, no `receive()` while paused); `recover()` backstop for lost signals; `apply` fenced by token + generation in `WATCH`/`MULTI`; atomic `push`; `due_ms` enforces retry delays; `drain(key_prefix=)`; risks documented (re-push after ack, ordering scope, DLQ durability) |
