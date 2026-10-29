@@ -14,7 +14,7 @@ tags: [queues, redis-streams, ordering, keyed-queue, workers, flush]
 **Date**: 2026-10-29
 **Author**: Jesus Lara (design) · Claude (spec)
 **Status**: review (v0.2 — spec review 2026-10-29, see Revision History)
-**Target version**: navigator-eventbus **0.5.0** — the release that fieldsync FEAT-830
+**Target version**: the next navigator-eventbus release (number chosen by Jesús at release time; written **0.5.0** below as a placeholder) — the release that fieldsync FEAT-830
 (`sdd/proposals/workday-punch-outage-resilience.proposal.md` in the fieldsync repo) depends on.
 0.4.0 is already tagged (`279b0d8`, FEAT-431 Unified Broker Manager) and published on PyPI,
 so this feature cannot ship under that number.
@@ -200,6 +200,7 @@ class KeyedQueueConfig(BaseModel):
     pause_default_ttl_ms: int = 60_000
     pause_poll_ms: int = 1_000               # paused consumers re-check at most this often
     recover_interval_ms: int = 60_000        # recover() throttle (SET NX PX), see signal rule 5
+    wait_safety_ms: Optional[int] = None     # None → lock_ttl_ms × 10; deadline for a `wait` without until_ms (Q3)
     prefix: str = "evq:keyed:"
     # validator: signal.default_visibility_timeout_ms > lock_ttl_ms (signal rule 2)
 
@@ -219,7 +220,7 @@ class KeyedMessage(BaseModel):
 class Outcome(BaseModel):                   # what a handler returns
     kind: Literal["ack", "retry", "wait", "hold"]
     delay_ms: Optional[int] = None          # retry: None → backoff(attempts)
-    until_ms: Optional[int] = None          # wait: re-check deadline (None → only re-signal)
+    until_ms: Optional[int] = None          # wait: re-check deadline (None → now + wait_safety_ms, Q3)
     reason: Optional[str] = None            # retry / wait / hold
 
 class DrainReport(BaseModel):
@@ -393,6 +394,7 @@ class KeyedConsumer:
 | `test_lock_expiry_makes_head_leasable_again` | M2 | advance clock past `lock_ttl_ms`; head leases again; stale `apply` raises `LeaseLost` |
 | `test_ack_resignals_when_key_not_empty` | M2 | ack with a second message pending → one new signal; SREM keys when empty |
 | `test_retry_keeps_head_and_delays_key` | M2 | retry → head unchanged, key in `delayed`, not leasable until `promote_due` after due |
+| `test_wait_without_until_gets_safety_deadline` | M2 | `wait` with `until_ms=None` → key in `delayed` at `now + wait_safety_ms`; leasable after it |
 | `test_wait_blocks_key_until_deadline_or_signal` | M2 | wait with `until_ms` → not leasable before; a new push to the key re-signals and the head is still the waiting message |
 | `test_hold_blocks_key_release_hold_resumes` | M2 | hold → `lease` skips the key; `release_hold` → leasable |
 | `test_pause_never_receives_signals` | M3 | paused for longer than `max_receives` × visibility → no `receive()` call, no signal parked to the DLQ; after resume every key is leased |
@@ -578,10 +580,10 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 ## 8. Open Questions
 
 - [x] Lua or plain commands? — *Owner: Jesús* — Plain commands plus redis-py `Lock`; see §7.
-- [ ] Q1 — *Owner: Jesús*: should `KeyedQueue` also expose HTTP routes (a `QueueAPI` sibling) in 0.5.0, or stay in-process until a non-Python consumer needs it? Recommendation: in-process only; fieldsync's worker is Python.
-- [ ] Q2 — *Owner: Jesús*: default `max_attempts` — unlimited (0) so the caller's deadline rules apply, or a finite default like `max_receives=5`? Recommendation: 0; the pull plane's 5 is about poison messages, not about a downstream outage.
-- [ ] Q3 — *Owner: Jesús*: `wait` without `until_ms` relies entirely on a later push to the same key re-signalling. Keep that, or always add a safety deadline (`lock_ttl_ms × 10`)? Recommendation: always add the safety deadline.
-- [ ] Q4 — *Owner: Jesús* (v0.2 review): release number. 0.4.0 is already published (FEAT-431, tag `279b0d8`), so this spec now targets **0.5.0**; 0.4.1 is the alternative if you prefer a patch number.
+- [x] Q1 HTTP surface — *Resolved 2026-10-29 (Juan, for the FEAT-830 consumer)*: in-process only in this release; no `QueueAPI`-style routes.
+- [x] Q2 default `max_attempts` — *Resolved 2026-10-29*: `0` (unlimited); a downstream outage is not a poison message, the caller's deadline rules decide.
+- [x] Q3 `wait` without `until_ms` — *Resolved 2026-10-29*: always add a safety deadline, `wait_safety_ms` (default `lock_ttl_ms × 10`); a `wait` with no `until_ms` gets `until = now + wait_safety_ms`.
+- [x] Q4 release number — *Resolved 2026-10-29*: Jesús picks the number when he cuts the release. "0.5.0" in this spec is a placeholder for "the first release that ships FEAT-713" (0.4.0 is taken by FEAT-431).
 
 ---
 
