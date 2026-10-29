@@ -1,0 +1,152 @@
+{
+  "feature": "keyed-queue",
+  "feature_id": "FEAT-713",
+  "spec": "sdd/specs/keyed-queue.spec.md",
+  "type": "feature",
+  "base_branch": "dev",
+  "created_at": "2026-10-29T23:00:00+00:00",
+  "completed_at": null,
+  "parallel_semantics": "exclusive",
+  "validation_contract": "required",
+  "tasks": [
+    {
+      "id": "TASK-4573",
+      "slug": "keyed-config-models",
+      "title": "KeyedQueue config and models",
+      "feature_id": "FEAT-713",
+      "feature": "keyed-queue",
+      "spec": "sdd/specs/keyed-queue.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "S",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "none: pure Pydantic models; no dependency",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4573-keyed-config-models.md"
+    },
+    {
+      "id": "TASK-4574",
+      "slug": "fake-redis-keyed-commands",
+      "title": "Extend FakeStreamsRedis for keyed queues",
+      "feature_id": "FEAT-713",
+      "feature": "keyed-queue",
+      "spec": "sdd/specs/keyed-queue.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [],
+      "parallel": true,
+      "parallelism_notes": "none: test helper only (tests/queues/_fake_streams.py); no other task modifies it",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4574-fake-redis-keyed-commands.md"
+    },
+    {
+      "id": "TASK-4575",
+      "slug": "keyed-store-core",
+      "title": "KeyedQueue core — push, lease, apply, extend, expiry, pause",
+      "feature_id": "FEAT-713",
+      "feature": "keyed-queue",
+      "spec": "sdd/specs/keyed-queue.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "L",
+      "depends_on": [
+        "TASK-4573",
+        "TASK-4574"
+      ],
+      "parallel": true,
+      "parallelism_notes": "imports KeyedQueueConfig/KeyedMessage/Outcome/LeaseLost from TASK-4573 (queues/keyed/config.py); tests need zset/hash/pipeline/register_script from TASK-4574 (tests/queues/_fake_streams.py)",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4575-keyed-store-core.md"
+    },
+    {
+      "id": "TASK-4576",
+      "slug": "keyed-store-operations",
+      "title": "KeyedQueue operations — promote_due, recover, release_hold, peek, keys, describe",
+      "feature_id": "FEAT-713",
+      "feature": "keyed-queue",
+      "spec": "sdd/specs/keyed-queue.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4575"
+      ],
+      "parallel": true,
+      "parallelism_notes": "modifies queues/keyed/store.py created by TASK-4575 (same file, serialized) and calls its signal helper",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4576-keyed-store-operations.md"
+    },
+    {
+      "id": "TASK-4577",
+      "slug": "keyed-consumer",
+      "title": "KeyedConsumer loop",
+      "feature_id": "FEAT-713",
+      "feature": "keyed-queue",
+      "spec": "sdd/specs/keyed-queue.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4576"
+      ],
+      "parallel": true,
+      "parallelism_notes": "calls KeyedQueue.recover/promote_due from TASK-4576 and lease/apply/KeyedLease.extend from TASK-4575 (queues/keyed/store.py)",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4577-keyed-consumer.md"
+    },
+    {
+      "id": "TASK-4578",
+      "slug": "keyed-drain",
+      "title": "drain — direct administrative flush",
+      "feature_id": "FEAT-713",
+      "feature": "keyed-queue",
+      "spec": "sdd/specs/keyed-queue.spec.md",
+      "status": "pending",
+      "priority": "high",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4576",
+        "TASK-4577"
+      ],
+      "parallel": true,
+      "parallelism_notes": "modifies queues/keyed/store.py after TASK-4576 (adds drain delegate below describe); imports Handler from TASK-4577 (queues/keyed/consumer.py)",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4578-keyed-drain.md"
+    },
+    {
+      "id": "TASK-4579",
+      "slug": "keyed-exports-docs-integration",
+      "title": "Exports, CHANGELOG, README and real-Redis integration tests",
+      "feature_id": "FEAT-713",
+      "feature": "keyed-queue",
+      "spec": "sdd/specs/keyed-queue.spec.md",
+      "status": "pending",
+      "priority": "medium",
+      "effort": "M",
+      "depends_on": [
+        "TASK-4577",
+        "TASK-4578"
+      ],
+      "parallel": true,
+      "parallelism_notes": "lazy-exports KeyedConsumer (TASK-4577, consumer.py) and drain (TASK-4578, drain.py); integration tests drive both",
+      "assigned_to": null,
+      "started_at": null,
+      "completed_at": null,
+      "file": "sdd/tasks/active/TASK-4579-keyed-exports-docs-integration.md"
+    }
+  ]
+}

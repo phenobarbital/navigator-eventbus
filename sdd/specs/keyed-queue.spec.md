@@ -1,7 +1,7 @@
 ---
 # SDD flow type and base branch (FEAT-145).
 type: feature
-base_branch: main
+base_branch: dev
 projects: [navigator-eventbus]
 tags: [queues, redis-streams, ordering, keyed-queue, workers, flush]
 ---
@@ -13,7 +13,7 @@ tags: [queues, redis-streams, ordering, keyed-queue, workers, flush]
 **Feature ID**: FEAT-713
 **Date**: 2026-10-29
 **Author**: Jesus Lara (design) · Claude (spec)
-**Status**: review (v0.2 — spec review 2026-10-29, see Revision History)
+**Status**: approved (v0.2, 2026-10-29 — Q1–Q4 resolved; tasks TASK-4573…4579)
 **Target version**: the next navigator-eventbus release (number chosen by Jesús at release time; written **0.5.0** below as a placeholder) — the release that fieldsync FEAT-830
 (`sdd/proposals/workday-punch-outage-resilience.proposal.md` in the fieldsync repo) depends on.
 0.4.0 is already tagged (`279b0d8`, FEAT-431 Unified Broker Manager) and published on PyPI,
