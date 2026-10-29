@@ -13,9 +13,11 @@ tags: [queues, redis-streams, ordering, keyed-queue, workers, flush]
 **Feature ID**: FEAT-713
 **Date**: 2026-10-29
 **Author**: Jesus Lara (design) · Claude (spec)
-**Status**: review
-**Target version**: navigator-eventbus 0.4.0 — the release that fieldsync FEAT-830
+**Status**: review (v0.2 — spec review 2026-10-29, see Revision History)
+**Target version**: navigator-eventbus **0.5.0** — the release that fieldsync FEAT-830
 (`sdd/proposals/workday-punch-outage-resilience.proposal.md` in the fieldsync repo) depends on.
+0.4.0 is already tagged (`279b0d8`, FEAT-431 Unified Broker Manager) and published on PyPI,
+so this feature cannot ship under that number.
 
 ---
 
@@ -110,13 +112,30 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
 |---|---|---|
 | `signal` (via `QueueStore`) | stream + group | `{key}` wake-ups, leased with the pull-queue visibility rules |
 | `key:<k>` | zset | member = `message_id`, score = caller `order` (default: enqueue time ms) |
-| `msg:<id>` | hash | `body` (JSON), `key`, `order`, `created_ms`, `attempts`, `state`, `last_error`, `wait_until_ms` |
+| `msg:<id>` | hash | `body` (JSON), `key`, `order`, `created_ms`, `attempts`, `state`, `last_error`, `wait_until_ms`, `due_ms` (retry eligibility), `gen` (lease generation) |
 | `lock:<k>` | string | `redis.asyncio.lock.Lock` token; TTL = `lock_ttl_ms` |
 | `delayed` | zset | member = key, score = due ms (retry backoff, `wait` deadlines) |
 | `held` | hash | key → JSON `{reason, since_ms, message_id}` |
 | `keys` | set | keys with at least one pending message (drain / describe) |
 | `all` | zset | member = `message_id`, score = `created_ms` (oldest-age metric, `max_age` scan) |
 | `paused` | string | reason; `PX` = pause TTL |
+| `recover` | string | `SET NX PX recover_interval_ms` throttle token for `recover()` — a rate limit, not a leader: whoever wins runs one pass, nobody owns anything |
+
+**Signal lifetime rules (v0.2, load-bearing for liveness).**
+1. The consumer that wins the per-key lock **keeps its signal un-acked** until `apply()`
+   finishes; `apply()` deletes it. If that consumer dies, the signal is reclaimed by the pull
+   plane and the next consumer finds the lock free once `lock_ttl_ms` has passed.
+2. Therefore the signal lease must outlive the lock: `signal.default_visibility_timeout_ms`
+   **>** `lock_ttl_ms` (validated in `KeyedQueueConfig`), and `KeyedLease.extend()` extends
+   the signal visibility together with the lock.
+3. A consumer that receives a signal for a key whose lock is **held by someone else** acks
+   that signal (it is a duplicate: the holder still owns its own signal and re-signals on ack).
+4. While the queue is paused, consumers **do not call `receive()`** at all: they sleep until
+   `is_paused()` clears. A paused queue never cycles signals, so `max_receives` (pull plane,
+   `ge=1`, default 5 — `queues/config.py:120`) is never consumed by a pause.
+5. Signals stay hints. `recover()` is the backstop that makes a lost signal (consumer crash
+   between `ZREM delayed` and `send`, a signal parked by `max_receives`, Redis eviction)
+   cost at most one `recover_interval_ms`.
 
 ### Component Diagram
 
@@ -125,21 +144,31 @@ producer ── push(key, body, message_id, order) ──► msg:<id> (HSETNX) �
                                                   └─► QueueStore.send(signal{key})            (hint)
 
 KeyedConsumer × N (any pod, no leader)
-  loop:  promote_due()            ZRANGEBYSCORE delayed ≤ now → ZREM (winner only) → send(signal{key})
-         lease()                  QueueStore.receive(signal) → paused? requeue signal with visibility
-                                  → Lock(lock:<k>).acquire(blocking=False) → head = ZRANGE key:<k> 0 0
-                                  → head expired (max_age)? on_dlq + remove, log, next
-                                  → head waiting (wait_until > now) / key held? release, ack signal, next
-                                  → return KeyedLease(key, message, lock)
-         outcome = handler(msg)   bounded by asyncio.wait_for(call_timeout_ms)
-         apply:  ack   → ZREM head · DEL msg · ZREM all · re-signal if ZCARD>0 else SREM keys · unlock
-                 retry → attempts+1 · ZADD delayed key=now+delay · unlock      (head stays)
-                 wait  → state=waiting · wait_until · ZADD delayed (deadline) · unlock (head stays)
-                 hold  → HSET held key · unlock                               (head stays)
-         every path: QueueStore.delete(signal receipt)
+  loop:  is_paused()?             yes → sleep min(pause PTTL, poll) · NO receive (signal rule 4)
+         recover()                every recover_interval_ms, throttled by SET NX PX `recover`
+                                  → for k in keys: not locked, not held, no delayed entry → send(signal{k})
+         promote_due()            ZRANGEBYSCORE delayed ≤ now → ZREM (winner only) → send(signal{key})
+         lease()                  QueueStore.receive(signal)
+                                  → Lock(lock:<k>).acquire(blocking=False)
+                                      fails → ack signal (duplicate, rule 3), next
+                                  → head = ZRANGE key:<k> 0 0
+                                  → key held / head waiting (wait_until > now) / head not due (due_ms > now)
+                                      → release lock, ack signal, ensure ZADD delayed key=deadline, next
+                                  → head expired (max_age)? (only a pending head; never a waiting/held one)
+                                      → log "expiring" · await on_dlq · remove (same MULTI as ack), next
+                                  → gen+1 on msg · return KeyedLease(key, message, lock, signal receipt, gen)
+         outcome = handler(msg)   bounded by asyncio.wait_for(call_timeout_ms); KeyedConsumer extends
+                                  lock + signal visibility every lock_ttl_ms/3
+         apply (WATCH lock:<k> msg:<id> → token == ours and gen unchanged → MULTI … EXEC; else LeaseLost):
+                 ack   → ZREM head · DEL msg · ZREM all · re-signal if ZCARD>0 else SREM keys · unlock
+                 retry → attempts+1 · due_ms=now+delay · ZADD delayed key=due_ms · unlock     (head stays)
+                 wait  → state=waiting · wait_until · ZADD delayed (deadline) · unlock      (head stays)
+                 hold  → HSET held key · unlock                                             (head stays)
+         after EXEC: QueueStore.delete(signal receipt)   (rule 1 — the holder's own signal)
 
-drain(handler)                    gather(drain_key(k) for k in keys ∪ delayed, sem) — same Lock per key;
-                                  sequential inside a key; fail-fast after N consecutive retry outcomes
+drain(handler, key_prefix)        gather(drain_key(k) for k in (keys ∪ delayed) matching key_prefix, sem)
+                                  same Lock per key; sequential inside a key; lock extended per head;
+                                  fail-fast after N consecutive retry outcomes
 ```
 
 ### Integration Points
@@ -169,7 +198,10 @@ class KeyedQueueConfig(BaseModel):
     retry_factor: float = 2.0
     promote_batch: int = 100
     pause_default_ttl_ms: int = 60_000
+    pause_poll_ms: int = 1_000               # paused consumers re-check at most this often
+    recover_interval_ms: int = 60_000        # recover() throttle (SET NX PX), see signal rule 5
     prefix: str = "evq:keyed:"
+    # validator: signal.default_visibility_timeout_ms > lock_ttl_ms (signal rule 2)
 
 class KeyedMessage(BaseModel):
     message_id: str
@@ -181,6 +213,8 @@ class KeyedMessage(BaseModel):
     state: Literal["pending", "leased", "waiting", "held"]
     last_error: Optional[str]
     wait_until_ms: Optional[int]
+    due_ms: Optional[int]                    # retry eligibility; lease() skips the head before it
+    gen: int                                 # lease generation; apply() fences on it
 
 class Outcome(BaseModel):                   # what a handler returns
     kind: Literal["ack", "retry", "wait", "hold"]
@@ -216,14 +250,15 @@ class KeyedQueue:
     async def peek(self, key: str, *, limit: int = 10) -> list[KeyedMessage]: ...
     async def keys(self) -> list[str]: ...
     async def describe(self) -> dict[str, Any]: ...
-    async def drain(self, handler, *, concurrency: int = 10, call_timeout_ms: int | None = None,
-                    stop_after_failures: int = 5, include_held: bool = False,
-                    ignore_pause: bool = False) -> DrainReport: ...
+    async def recover(self, *, force: bool = False) -> int: ...
+    async def drain(self, handler, *, key_prefix: str | None = None, concurrency: int = 10,
+                    call_timeout_ms: int | None = None, stop_after_failures: int = 5,
+                    include_held: bool = False, ignore_pause: bool = False) -> DrainReport: ...
 
 class KeyedLease:
     key: str
     message: KeyedMessage
-    async def extend(self, additional_ms: int | None = None) -> None: ...   # raises LeaseLost
+    async def extend(self, additional_ms: int | None = None) -> None: ...   # lock + signal visibility; raises LeaseLost
 
 class KeyedConsumer:
     async def run(self, handler, *, stop: asyncio.Event) -> None: ...
@@ -274,18 +309,29 @@ class KeyedConsumer:
                    clock: Optional[Callable[[], float]] = None) -> None: ...
       async def push(self, key: str, body: dict, *, message_id: Optional[str] = None,
                      order: Optional[float] = None) -> str:
-          """HSETNX msg → ZADD key → SADD keys → ZADD all → signal. Returns the id.
-          Idempotent: an existing message_id changes nothing and still re-signals."""
+          """One MULTI/EXEC: HSET msg (all fields) only if absent (WATCH msg:<id>) + ZADD key
+          + SADD keys + ZADD all; then signal. Returns the id. Idempotent: an existing
+          message_id changes nothing and still re-signals; an existing id with a different
+          key raises ValueError. NOTE: after an ack the hash is gone, so a later push of the
+          same id creates a NEW message — callers that re-push from their record must make
+          their handler check that record (see §7)."""
       async def lease(self, *, wait_ms: int = 0) -> Optional[KeyedLease]:
-          """Lease the head of one key, or None. Never returns a message of a key
-          that is locked, held, waiting (before its deadline) or paused."""
+          """Lease the head of one key, or None. Never returns a message of a key that is
+          locked, held, waiting (before its deadline), not yet due (retry) or paused. Keeps
+          the signal un-acked while leased (signal rule 1); acks duplicates (rule 3)."""
       async def apply(self, lease: KeyedLease, outcome: Outcome) -> None:
-          """Apply ack/retry/wait/hold. Raises LeaseLost if the lock is not owned."""
+          """Apply ack/retry/wait/hold inside WATCH lock:<k> msg:<id> → MULTI/EXEC, after
+          checking the lock token and `gen`. Raises LeaseLost and changes nothing otherwise.
+          Deletes the holder's signal after EXEC."""
       async def promote_due(self, *, limit: Optional[int] = None) -> int:
           """Move due keys from `delayed` to the signal stream. Safe to call from N consumers:
           only the consumer whose ZREM returned 1 sends the signal."""
+      async def recover(self, *, force: bool = False) -> int:
+          """Throttled (SET NX PX `recover`) re-signal of every key in `keys` that is not
+          locked, not held and has no `delayed` entry. Any consumer may win; returns signals sent."""
       async def expire_head(self, key: str, message: KeyedMessage) -> bool:
-          """When created_ms + max_age_ms < now: log 'expiring', on_dlq(...), remove. Returns True if expired."""
+          """Only for a pending head (never waiting/held): when created_ms + max_age_ms < now,
+          log 'expiring', await on_dlq(...), remove in one MULTI. Returns True if expired."""
   ```
 
 ### Module 3: KeyedConsumer
@@ -302,7 +348,8 @@ class KeyedConsumer:
       """Run `handler` over leased heads until `stop` is set; exceptions become retry outcomes."""
       async def run(self, handler: Handler, *, stop: asyncio.Event) -> None: ...
       async def run_once(self, handler: Handler) -> Optional[Outcome]:
-          """promote_due → lease → handler (wait_for) → apply. Returns the applied outcome or None."""
+          """paused? → sleep · recover (throttled) · promote_due → lease → handler (wait_for, lock +
+          signal extended every lock_ttl_ms/3) → apply. Returns the applied outcome or None."""
   ```
 
 ### Module 4: drain
@@ -312,24 +359,27 @@ class KeyedConsumer:
 - **Interface Skeleton**:
   ```python
   # src/navigator_eventbus/queues/keyed/drain.py  (new)
-  async def drain(queue: KeyedQueue, handler: Handler, *, concurrency: int = 10,
-                  call_timeout_ms: Optional[int] = None, stop_after_failures: int = 5,
-                  include_held: bool = False, ignore_pause: bool = False) -> DrainReport:
-      """gather(drain_key(k)) over keys ∪ delayed-keys under a Semaphore(concurrency).
-      Ignores retry delays. A key locked by a live consumer counts as `busy` and is skipped.
+  async def drain(queue: KeyedQueue, handler: Handler, *, key_prefix: Optional[str] = None,
+                  concurrency: int = 10, call_timeout_ms: Optional[int] = None,
+                  stop_after_failures: int = 5, include_held: bool = False,
+                  ignore_pause: bool = False) -> DrainReport:
+      """gather(drain_key(k)) over (keys ∪ delayed-keys) whose name starts with `key_prefix`
+      (None = every key) under a Semaphore(concurrency). Ignores retry delays (`due_ms`),
+      never `wait` deadlines. A key locked by a live consumer counts as `busy` and is skipped.
       Stops launching new keys after `stop_after_failures` consecutive retry outcomes."""
   async def drain_key(queue: KeyedQueue, key: str, handler: Handler, sem: asyncio.Semaphore,
                       *, call_timeout_ms: int, counters: DrainReport) -> None:
-      """Lock the key once; loop over heads until a non-ack outcome or an empty key; unlock."""
+      """Lock the key once; loop over heads until a non-ack outcome or an empty key, extending
+      the lock before each head and applying each outcome through the same fenced `apply`; unlock."""
   ```
 
 ### Module 5: fake Redis extension and tests
 - **Path**: `tests/queues/_fake_streams.py` (modify), `tests/queues/keyed/` (new)
-- **Responsibility**: add `zadd/zrange/zrangebyscore/zrem/zcard/zscore`, `hset/hsetnx/hget/hgetall/hincrby/hdel/hlen`, `sadd/srem/smembers/scard`, `set(nx, px)/get/delete/pexpire/pttl`, and the `eval`/`register_script` shim `redis.asyncio.lock.Lock` uses for `release`/`extend` (token compare), to `FakeStreamsRedis`; the tests in §4.
+- **Responsibility**: add `zadd/zrange/zrangebyscore/zrem/zcard/zscore`, `hset/hsetnx/hget/hgetall/hincrby/hdel/hlen`, `sadd/srem/smembers/scard`, `set(nx, px)/get/delete/pexpire/pttl`, `watch`/`multi`/`exec` pipelines (`pipeline(transaction=True)` with `WATCH` invalidation), and the `eval`/`register_script` shim `redis.asyncio.lock.Lock` uses for `release`/`extend` (token compare), to `FakeStreamsRedis`; the tests in §4.
 - **Depends on**: M1–M4.
 
 ### Module 6: exports, changelog, README
-- **Path**: `src/navigator_eventbus/queues/__init__.py` (modify `_LAZY_MAP`, `__all__`), `CHANGELOG.md` (`## [0.4.0] — Unreleased`), `README.md` (new "Keyed queues" subsection after "Pull queues (SQS-style)").
+- **Path**: `src/navigator_eventbus/queues/__init__.py` (modify `_LAZY_MAP`, `__all__`), `CHANGELOG.md` (new `## [0.5.0] — Unreleased` section above 0.4.0; retitle the stale `## [0.4.0] — Unreleased` heading to the 0.4.0 release date), `README.md` (new "Keyed queues" subsection after "Pull queues (SQS-style)").
 - **Depends on**: M1–M4.
 
 ---
@@ -346,7 +396,7 @@ class KeyedConsumer:
 | `test_retry_keeps_head_and_delays_key` | M2 | retry → head unchanged, key in `delayed`, not leasable until `promote_due` after due |
 | `test_wait_blocks_key_until_deadline_or_signal` | M2 | wait with `until_ms` → not leasable before; a new push to the key re-signals and the head is still the waiting message |
 | `test_hold_blocks_key_release_hold_resumes` | M2 | hold → `lease` skips the key; `release_hold` → leasable |
-| `test_pause_blocks_lease_and_requeues_signal` | M2 | paused → `lease` returns None, signal visibility extended, not consumed |
+| `test_pause_never_receives_signals` | M3 | paused for longer than `max_receives` × visibility → no `receive()` call, no signal parked to the DLQ; after resume every key is leased |
 | `test_max_age_expires_head_to_dlq_with_log` | M2 | created older than `max_age_ms` → `on_dlq` called with attempts/error, message removed, log record "expiring" |
 | `test_push_is_idempotent_by_message_id` | M2 | second push with same id → no duplicate member, no change to body/attempts |
 | `test_promote_due_is_leaderless` | M2 | two promoters race on the same due key → exactly one signal |
@@ -359,6 +409,16 @@ class KeyedConsumer:
 | `test_drain_ignores_retry_delay` | M4 | delayed key drained immediately |
 | `test_drain_fail_fast` | M4 | 5 consecutive retry outcomes → `stopped_early=True`, remaining keys untouched |
 | `test_drain_respects_wait_and_hold` | M4 | a wait/hold outcome stops that key only |
+| `test_drain_key_prefix_scopes_keys` | M4 | keys `a:1`, `a:2`, `b:1`; `drain(key_prefix="a:")` touches only `a:*` |
+| `test_signal_kept_while_leased_and_recovered_after_crash` | M2 | consumer A leases and "dies" (no apply); B gets a duplicate signal while A's lock lives → acks it; after `lock_ttl_ms` A's own reclaimed signal lets B lease the head |
+| `test_visibility_must_exceed_lock_ttl` | M1 | `signal.default_visibility_timeout_ms <= lock_ttl_ms` → ValueError |
+| `test_recover_resignals_orphan_key` | M2 | key with a pending head, no signal, no delayed entry → `recover()` sends one signal; two concurrent `recover()` → one pass (throttle) |
+| `test_promote_crash_between_zrem_and_send_is_recovered` | M2 | ZREM done, send skipped → `recover()` re-signals |
+| `test_retry_delay_enforced_against_duplicate_signal` | M2 | retry(900 s) then a duplicate signal / a new push to the key → `lease` skips the head until `due_ms` |
+| `test_stale_apply_is_fenced` | M2 | A's lock expires between its token check and EXEC, B leases → A's `apply` raises `LeaseLost`, B's state intact (WATCH invalidation) |
+| `test_push_is_atomic` | M2 | push interrupted before EXEC → nothing written; re-push creates the full message |
+| `test_push_same_id_other_key_rejected` | M2 | ValueError |
+| `test_expiry_skips_waiting_and_held_heads` | M2 | a waiting or held head older than `max_age_ms` is not expired |
 | `test_exports_lazy` | M6 | `from navigator_eventbus.queues import KeyedQueue` resolves lazily, no redis import at package import |
 
 ### Integration Tests
@@ -383,7 +443,7 @@ markers: none
 @pytest.fixture
 def keyed(fake_redis, clock) -> KeyedQueue:
     signal = QueueConfig(name="punches-signal", groups=[QueueGroupConfig(name="workers")],
-                         default_visibility_timeout_ms=5_000, max_visibility_timeout_ms=5_000)
+                         default_visibility_timeout_ms=20_000, max_visibility_timeout_ms=20_000)  # > lock_ttl_ms (rule 2)
     store = QueueStore(QueueRegistry(queues=[signal]), fake_redis, ReceiptCodec(["k"]), clock=clock)
     return KeyedQueue(KeyedQueueConfig(name="punches", signal=signal, lock_ttl_ms=10_000),
                       fake_redis, store=store, clock=clock)
@@ -402,8 +462,12 @@ def keyed(fake_redis, clock) -> KeyedQueue:
 - [ ] An expired head is logged and handed to `on_dlq`; nothing is removed silently.
 - [ ] `drain` never delivers a key that a live consumer holds (`busy`), and never delivers out of order inside a key.
 - [ ] No change to `QueueStore`, `RedisStreamsBackend`, `BusCore` behaviour; `tests/queues/test_store.py` unchanged and green.
-- [ ] `CHANGELOG.md` 0.4.0 entry, README subsection, lazy exports.
-- [ ] Release 0.4.0 tagged and published; fieldsync FEAT-830 pins `navigator-eventbus>=0.4.0`.
+- [ ] `CHANGELOG.md` 0.5.0 entry, README subsection, lazy exports.
+- [ ] A pause never consumes signal deliveries; a consumer crash or a lost signal delays a key by at most `max(lock_ttl_ms, recover_interval_ms)`, never forever.
+- [ ] `apply` is fenced by token + generation in one `WATCH`/`MULTI`; a stale outcome changes nothing.
+- [ ] A retry delay is honoured even when the key is re-signalled early.
+- [ ] `drain(key_prefix=…)` never touches keys outside the prefix.
+- [ ] Release **0.5.0** tagged and published; fieldsync FEAT-830 pins `navigator-eventbus>=0.5.0`.
 
 ---
 
@@ -473,7 +537,7 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 | `src/navigator_eventbus/queues/__init__.py` | MODIFY | `_LAZY_MAP = {` | `queues/__init__.py:49` | 1 |
 | `tests/queues/_fake_streams.py` | MODIFY | `class FakeStreamsRedis:` | `_fake_streams.py:64` | 1 |
 | `tests/queues/keyed/test_store.py` · `test_consumer.py` · `test_drain.py` · `test_exports.py` | CREATE | — | — | — |
-| `CHANGELOG.md` | MODIFY | `## [0.4.0] — Unreleased` | `CHANGELOG.md:6` | 1 |
+| `CHANGELOG.md` | MODIFY | `## [0.4.0] — Unreleased` (insert `## [0.5.0] — Unreleased` above it, retitle it) | `CHANGELOG.md:6` | 1 |
 | `README.md` | MODIFY | `### Pull queues (SQS-style)` | `README.md:104` | 1 |
 
 ---
@@ -491,7 +555,9 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 - **Mutual exclusion per key**: `redis.asyncio.lock.Lock` already does `SET NX PX` with an owner token and token-checked `release`/`extend`. Never hand-roll `SET NX`.
 - **Promotion is leaderless because `ZREM` is atomic per member**: every consumer may read the due keys, but only the one whose `ZREM delayed <key>` returns 1 sends the signal.
 - **Idempotent push**: `HSETNX msg:<id> key <k>` decides creation; `ZADD`, `SADD`, `ZADD all` are idempotent by member, so a partially failed push is repaired by the next push of the same id.
-- **Outcome application is guarded by the lock**: `apply` first checks `lock.owned()`; a stale lease raises `LeaseLost` and changes nothing. The handler's external side effect may already have happened; that is the caller's idempotency concern (FEAT-432 §9 "consumers must be idempotent" applies unchanged).
+- **Outcome application is fenced, not just checked** (v0.2): `lock.owned()` followed by separate commands is a check-then-act race (the lock can expire between them and another consumer's state gets overwritten). `apply` runs `WATCH lock:<k> msg:<id>`, compares the lock value with our token and `msg.gen` with the lease's generation, then issues every mutation in one `MULTI`/`EXEC`; a `WatchError` or a mismatch raises `LeaseLost` and changes nothing. No Lua is needed. The handler's external side effect may already have happened; that is the caller's idempotency concern (FEAT-432 §9 "consumers must be idempotent" applies unchanged).
+- **Push is one transaction** (v0.2): `WATCH msg:<id>` → if absent, `MULTI` HSET (all fields) + ZADD key + SADD keys + ZADD all → `EXEC`. A crash before EXEC writes nothing; a partially initialised message cannot exist.
+- **A handler timeout or cancellation is reported to the handler's owner, not hidden** : `KeyedConsumer` converts exceptions into `retry`, which is only correct for handlers whose side effect is idempotent or provably not started. Handlers talking to a non-idempotent downstream must catch `asyncio.CancelledError`/`TimeoutError` themselves and return their own outcome (documented in the README; FEAT-830 does exactly this).
 - **Signals are hints**: losing one costs at most one `promote_due`/re-push; duplicates cost one no-op lease. Never build an invariant on signal presence.
 
 ### Known Risks / Gotchas
@@ -499,7 +565,10 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 - `max_age` expiry is detected lazily (when a head is examined). A key nobody signals keeps its expired head until `drain`, `promote_due` or a new push touches it. `describe()` exposes `oldest_age_ms` from `all` so an operator can alarm on it.
 - `drain` with high `concurrency` against a downstream that just recovered can overload it; `stop_after_failures` and the semaphore are the only guards. Callers choose the number.
 - `pause` is global for the queue. Per-tenant pausing is a caller concern (use one queue per tenant, or hold keys).
-- Redis data loss empties the queue silently. The contract is explicit: callers rebuild via idempotent `push` from their record at startup / in their flush.
+- Redis data loss empties the queue silently. The contract is explicit: callers rebuild via idempotent `push` from their record at startup / in their flush. `recover()` does not help here: it re-signals keys that still exist in Redis.
+- **Re-push after ack recreates the message** (the hash is deleted on ack). Callers that re-push from their record must have the handler consult that record and `ack` without side effects when the work is already done.
+- **Ordering is among queued messages only.** A message pushed after a later-scored message of the same key was already acked sorts first among what is left, but cannot undo the earlier delivery. Callers needing stronger guarantees enforce them in the handler.
+- **DLQ handoff is best-effort persistence**: `DLQHandler.on_dlq` persists in a background task and swallows failures (`dlq.py:195-227`), and its replay republishes to the bus, not into a `KeyedQueue`. The caller's record stays the recovery source for expired messages.
 
 ### External Dependencies
 | Package | Version | Reason |
@@ -511,7 +580,7 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 ## 8. Open Questions
 
 - [x] Lua or plain commands? — *Owner: Jesús* — Plain commands plus redis-py `Lock`; see §7.
-- [ ] Q1 — *Owner: Jesús*: should `KeyedQueue` also expose HTTP routes (a `QueueAPI` sibling) in 0.4.0, or stay in-process until a non-Python consumer needs it? Recommendation: in-process only; fieldsync's worker is Python.
+- [ ] Q1 — *Owner: Jesús*: should `KeyedQueue` also expose HTTP routes (a `QueueAPI` sibling) in 0.5.0, or stay in-process until a non-Python consumer needs it? Recommendation: in-process only; fieldsync's worker is Python.
 - [ ] Q2 — *Owner: Jesús*: default `max_attempts` — unlimited (0) so the caller's deadline rules apply, or a finite default like `max_receives=5`? Recommendation: 0; the pull plane's 5 is about poison messages, not about a downstream outage.
 - [ ] Q3 — *Owner: Jesús*: `wait` without `until_ms` relies entirely on a later push to the same key re-signalling. Keep that, or always add a safety deadline (`lock_ttl_ms × 10`)? Recommendation: always add the safety deadline.
 
@@ -540,3 +609,4 @@ Summary: **4** confirmed · **1** rejected · **1** escalated.
 | Version | Date | Author | Change |
 |---|---|---|---|
 | 0.1 | 2026-10-29 | Claude (for Jesus Lara) | Initial draft from the FEAT-830 architecture review |
+| 0.2 | 2026-10-29 | Juan (with Claude; Codex cross-check) | Spec review fixes, design decisions unchanged: target **0.5.0** (0.4.0 already published); signal lifetime rules (holder keeps its signal, visibility > lock TTL, duplicates acked, no `receive()` while paused); `recover()` backstop for lost signals; `apply` fenced by token + generation in `WATCH`/`MULTI`; atomic `push`; `due_ms` enforces retry delays; `drain(key_prefix=)`; expiry only for pending heads; risks documented (re-push after ack, ordering scope, DLQ durability) |
