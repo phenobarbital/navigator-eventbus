@@ -150,4 +150,4 @@ Never run `FLUSHDB` on a Redis database you did not select for the test.
 
 ## Completion Note
 
-*(filled by the implementing agent)*
+Exports (queues/__init__.py lazy map + eager config names, `__all__` sorted; keyed/__init__.py lazy), CHANGELOG 0.5.0 (placeholder number) + 0.4.0 retitled 2026-10-21, README subsection, test_exports.py, test_integration.py. Integration tests RAN (not skipped) against local Redis (redis-cli reports a v8 server, not 7) on dedicated DB 15 (env KEYED_TEST_REDIS_DB); the fixture refuses to run unless that DB is empty, and FLUSHDB runs only there. The fixture also resets redis-py's class-level Lock script cache so fake-based and real tests can run in any order. `tests/queues`: 261 passed.

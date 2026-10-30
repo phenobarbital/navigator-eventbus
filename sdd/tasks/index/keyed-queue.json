@@ -5,7 +5,7 @@
   "type": "feature",
   "base_branch": "dev",
   "created_at": "2026-10-29T23:00:00+00:00",
-  "completed_at": null,
+  "completed_at": "2026-10-30T04:12:06+00:00",
   "parallel_semantics": "exclusive",
   "validation_contract": "required",
   "tasks": [
@@ -140,7 +140,7 @@
       "feature_id": "FEAT-713",
       "feature": "keyed-queue",
       "spec": "sdd/specs/keyed-queue.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "medium",
       "effort": "M",
       "depends_on": [
@@ -151,8 +151,9 @@
       "parallelism_notes": "lazy-exports KeyedConsumer (TASK-4577, consumer.py) and drain (TASK-4578, drain.py); integration tests drive both",
       "assigned_to": null,
       "started_at": "2026-10-30T02:54:04+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4579-keyed-exports-docs-integration.md"
+      "completed_at": "2026-10-30T04:12:06+00:00",
+      "file": "sdd/tasks/completed/TASK-4579-keyed-exports-docs-integration.md",
+      "verification": "verified"
     }
   ]
 }
