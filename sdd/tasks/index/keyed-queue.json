@@ -76,7 +76,7 @@
       "feature_id": "FEAT-713",
       "feature": "keyed-queue",
       "spec": "sdd/specs/keyed-queue.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -86,8 +86,9 @@
       "parallelism_notes": "modifies queues/keyed/store.py created by TASK-4575 (same file, serialized) and calls its signal helper",
       "assigned_to": null,
       "started_at": "2026-10-30T02:54:04+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4576-keyed-store-operations.md"
+      "completed_at": "2026-10-30T02:59:49+00:00",
+      "file": "sdd/tasks/completed/TASK-4576-keyed-store-operations.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4577",

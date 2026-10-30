@@ -152,4 +152,4 @@ Also run `pytest tests/queues/keyed/test_store.py -q` (TASK-4575's tests) before
 
 ## Completion Note
 
-*(filled by the implementing agent)*
+Six methods added to store.py (reusing `_signal`), tests in tests/queues/keyed/test_store_ops.py (fixtures imported from test_store.py, file-level `ruff: noqa: F811` for the re-imported fixtures). TASK-4575 method bodies untouched. `tests/queues`: 237 passed.
