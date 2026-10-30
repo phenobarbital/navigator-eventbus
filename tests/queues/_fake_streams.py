@@ -18,7 +18,11 @@ Two things this one adds over the backend's fake, both required here:
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 from typing import Any, Optional
+
+from redis.exceptions import ResponseError
 
 
 class FakeResponseError(Exception):
@@ -133,6 +137,7 @@ class FakeStreamsRedis:
 
     async def xadd(self, name, fields, maxlen=None, approximate=True):
         self._record("xadd", name, maxlen=maxlen)
+        self._check(name, "stream")
         self._seq += 1
         message_id = f"{self._seq}-0"
         entries = self.streams.setdefault(name, [])
@@ -142,6 +147,7 @@ class FakeStreamsRedis:
         return message_id
 
     async def xlen(self, name):
+        self._check(name, "stream")
         return len(self.streams.get(name, []))
 
     async def xdel(self, name, *ids):
@@ -347,20 +353,43 @@ class FakeStreamsRedis:
     def _bump(self, key: str) -> None:
         self._versions[key] = self._versions.get(key, 0) + 1
 
+    def _stores(self) -> tuple[tuple[str, dict], ...]:
+        return (
+            ("string", self.strings),
+            ("hash", self.hashes),
+            ("set", self.sets),
+            ("zset", self.zsets),
+            ("stream", self.streams),
+        )
+
     def _expire_if_due(self, key: str) -> None:
-        """Lazy expiry. Like Redis >= 6.0.9 it does NOT invalidate a WATCH."""
+        """Lazy expiry. Dropping an expired key counts as a write for WATCH
+        (Redis >= 6.0.9: a watched key that existed at WATCH time and expired
+        aborts EXEC)."""
         due = self._expires_ms.get(key)
         if due is not None and self.clock.now * 1000.0 >= due:
-            for store in (self.strings, self.hashes, self.sets, self.zsets):
+            for _kind, store in self._stores():
                 store.pop(key, None)
             self._expires_ms.pop(key, None)
+            self._bump(key)
+
+    def _kind(self, key: str) -> Optional[str]:
+        self._expire_if_due(key)
+        for kind, store in self._stores():
+            if key in store:
+                return kind
+        return None
+
+    def _check(self, key: str, kind: str) -> None:
+        """One key name = one type, like Redis."""
+        actual = self._kind(key)
+        if actual not in (None, kind):
+            raise ResponseError(
+                "WRONGTYPE Operation against a key holding the wrong kind of value"
+            )
 
     def _exists(self, key: str) -> bool:
-        self._expire_if_due(key)
-        return any(
-            key in store
-            for store in (self.strings, self.hashes, self.sets, self.zsets)
-        )
+        return self._kind(key) is not None
 
     def _cleanup(self, key: str) -> None:
         """Redis drops a container key once it becomes empty."""
@@ -387,7 +416,7 @@ class FakeStreamsRedis:
         present = self._exists(name)
         if (nx and present) or (xx and not present):
             return None
-        for store in (self.hashes, self.sets, self.zsets):
+        for _kind, store in self._stores():
             store.pop(name, None)
         self.strings[name] = _s(value)
         self._expires_ms.pop(name, None)
@@ -401,6 +430,7 @@ class FakeStreamsRedis:
     async def get(self, name):
         self._record("get", name)
         name = _s(name)
+        self._check(name, "string")
         self._expire_if_due(name)
         return self.strings.get(name)
 
@@ -410,7 +440,7 @@ class FakeStreamsRedis:
         for raw in names:
             name = _s(raw)
             if self._exists(name):
-                for store in (self.strings, self.hashes, self.sets, self.zsets):
+                for _kind, store in self._stores():
                     store.pop(name, None)
                 self._expires_ms.pop(name, None)
                 self._bump(name)
@@ -445,6 +475,7 @@ class FakeStreamsRedis:
     async def hset(self, name, key=None, value=None, mapping=None):
         self._record("hset", name)
         name = _s(name)
+        self._check(name, "hash")
         self._exists(name)
         data = self.hashes.setdefault(name, {})
         items = dict(mapping or {})
@@ -461,6 +492,7 @@ class FakeStreamsRedis:
     async def hsetnx(self, name, key, value):
         self._record("hsetnx", name, key)
         name, key = _s(name), _s(key)
+        self._check(name, "hash")
         self._exists(name)
         data = self.hashes.setdefault(name, {})
         if key in data:
@@ -472,18 +504,21 @@ class FakeStreamsRedis:
     async def hget(self, name, key):
         self._record("hget", name, key)
         name = _s(name)
+        self._check(name, "hash")
         self._expire_if_due(name)
         return self.hashes.get(name, {}).get(_s(key))
 
     async def hgetall(self, name):
         self._record("hgetall", name)
         name = _s(name)
+        self._check(name, "hash")
         self._expire_if_due(name)
         return dict(self.hashes.get(name, {}))
 
     async def hincrby(self, name, key, amount=1):
         self._record("hincrby", name, key, amount)
         name, key = _s(name), _s(key)
+        self._check(name, "hash")
         self._exists(name)
         data = self.hashes.setdefault(name, {})
         data[key] = str(int(data.get(key, "0")) + int(amount))
@@ -493,6 +528,7 @@ class FakeStreamsRedis:
     async def hdel(self, name, *keys):
         self._record("hdel", name, *keys)
         name = _s(name)
+        self._check(name, "hash")
         self._expire_if_due(name)
         data = self.hashes.get(name, {})
         removed = sum(1 for k in keys if data.pop(_s(k), None) is not None)
@@ -504,6 +540,7 @@ class FakeStreamsRedis:
     async def hlen(self, name):
         self._record("hlen", name)
         name = _s(name)
+        self._check(name, "hash")
         self._expire_if_due(name)
         return len(self.hashes.get(name, {}))
 
@@ -512,6 +549,7 @@ class FakeStreamsRedis:
     async def sadd(self, name, *members):
         self._record("sadd", name, *members)
         name = _s(name)
+        self._check(name, "set")
         self._exists(name)
         data = self.sets.setdefault(name, set())
         before = len(data)
@@ -522,6 +560,7 @@ class FakeStreamsRedis:
     async def srem(self, name, *members):
         self._record("srem", name, *members)
         name = _s(name)
+        self._check(name, "set")
         self._expire_if_due(name)
         data = self.sets.get(name, set())
         removed = 0
@@ -537,30 +576,34 @@ class FakeStreamsRedis:
     async def smembers(self, name):
         self._record("smembers", name)
         name = _s(name)
+        self._check(name, "set")
         self._expire_if_due(name)
         return set(self.sets.get(name, set()))
 
     async def scard(self, name):
         self._record("scard", name)
         name = _s(name)
+        self._check(name, "set")
         self._expire_if_due(name)
         return len(self.sets.get(name, set()))
 
     async def sismember(self, name, member):
         self._record("sismember", name, member)
         name = _s(name)
+        self._check(name, "set")
         self._expire_if_due(name)
         return _s(member) in self.sets.get(name, set())
 
     # sorted sets
 
     def _zsorted(self, name: str) -> list[tuple[str, float]]:
-        self._expire_if_due(name)
+        self._check(name, "zset")
         return sorted(self.zsets.get(name, {}).items(), key=lambda kv: (kv[1], kv[0]))
 
     async def zadd(self, name, mapping, nx=False):
         self._record("zadd", name, nx=nx)
         name = _s(name)
+        self._check(name, "zset")
         self._exists(name)
         data = self.zsets.setdefault(name, {})
         added = 0
@@ -602,6 +645,7 @@ class FakeStreamsRedis:
     async def zrem(self, name, *members):
         self._record("zrem", name, *members)
         name = _s(name)
+        self._check(name, "zset")
         self._expire_if_due(name)
         data = self.zsets.get(name, {})
         removed = sum(1 for m in members if data.pop(_s(m), None) is not None)
@@ -613,12 +657,14 @@ class FakeStreamsRedis:
     async def zcard(self, name):
         self._record("zcard", name)
         name = _s(name)
+        self._check(name, "zset")
         self._expire_if_due(name)
         return len(self.zsets.get(name, {}))
 
     async def zscore(self, name, member):
         self._record("zscore", name, member)
         name = _s(name)
+        self._check(name, "zset")
         self._expire_if_due(name)
         return self.zsets.get(name, {}).get(_s(member))
 
@@ -662,6 +708,7 @@ class _FakePipeline:
         await self.reset()
 
     async def watch(self, *names: str) -> bool:
+        await asyncio.sleep(0)
         self._buffering = False
         for raw in names:
             name = _s(raw)
@@ -686,16 +733,28 @@ class _FakePipeline:
         return _record
 
     async def execute(self) -> list:
+        """EXEC: one network round trip, then atomic (raw, non-yielding commands).
+
+        Like Redis, every queued command runs and runtime errors are returned in
+        place; redis-py then raises the first one (``raise_on_error=True``).
+        """
         from redis.exceptions import WatchError
 
+        await asyncio.sleep(0)
         try:
             for name, version in self._watched.items():
                 self._redis._expire_if_due(name)
                 if self._redis._versions.get(name, 0) != version:
                     raise WatchError("Watched variable changed.")
-            results = []
+            results: list = []
             for name, args, kwargs in self._queue:
-                results.append(await getattr(self._redis, name)(*args, **kwargs))
+                try:
+                    results.append(await _raw(self._redis, name)(*args, **kwargs))
+                except Exception as exc:  # noqa: BLE001 — returned in place
+                    results.append(exc)
+            for result in results:
+                if isinstance(result, Exception):
+                    raise result
             return results
         finally:
             await self.reset()
@@ -721,28 +780,51 @@ class _FakeScript:
         if not isinstance(client, FakeStreamsRedis):
             return await client.eval(self.script, len(keys), *keys, *args)
         name = _s(keys[0])
-        stored = await client.get(name)
+        stored = await _raw(client, "get")(name)
         token = _s(args[0])
         if self.script == Lock.LUA_RELEASE_SCRIPT:
             if stored is None or stored != token:
                 return 0
-            await client.delete(name)
+            await _raw(client, "delete")(name)
             return 1
         if self.script == Lock.LUA_EXTEND_SCRIPT:
             if stored is None or stored != token:
                 return 0
-            ttl = await client.pttl(name)
+            ttl = await _raw(client, "pttl")(name)
             if ttl < 0:
                 return 0
             additional = int(_s(args[1]))
             new_ttl = additional if _s(args[2]) == "1" else ttl + additional
-            await client.pexpire(name, new_ttl)
+            await _raw(client, "pexpire")(name, new_ttl)
             return 1
         if self.script == Lock.LUA_REACQUIRE_SCRIPT:
             if stored is None or stored != token:
                 return 0
-            await client.pexpire(name, int(_s(args[1])))
+            await _raw(client, "pexpire")(name, int(_s(args[1])))
             return 1
         raise NotImplementedError(
             f"FakeStreamsRedis script not emulated: {self.script.strip().splitlines()[0]!r}"
         )
+
+
+def _raw(client: "FakeStreamsRedis", name: str):
+    """The non-yielding implementation of a command (for atomic EXEC/scripts)."""
+    return functools.partial(getattr(type(client), name).__wrapped__, client)
+
+
+def _yielding(fn):
+    @functools.wraps(fn)
+    async def wrapper(self, *args, **kwargs):
+        await asyncio.sleep(0)  # a network round trip is an await point
+        return await fn(self, *args, **kwargs)
+
+    return wrapper
+
+
+for _name, _fn in list(vars(FakeStreamsRedis).items()):
+    if (
+        asyncio.iscoroutinefunction(_fn)
+        and not _name.startswith("_")
+        and _name not in {"aclose", "close"}
+    ):
+        setattr(FakeStreamsRedis, _name, _yielding(_fn))

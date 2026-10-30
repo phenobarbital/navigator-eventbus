@@ -114,15 +114,120 @@ async def test_pipeline_watch_clean_executes(r):
         assert await pipe.execute() == [True]
 
 
-async def test_expiry_of_watched_key_does_not_abort(r, clock):
-    """Modern Redis: a watched key merely expiring leaves EXEC valid."""
+async def test_expiry_of_watched_key_aborts_exec(r, clock):
+    """Redis >= 6.0.9 (checked on 8.10): a watched key that existed at WATCH
+    time and expired before EXEC aborts the transaction."""
+    from redis.exceptions import WatchError
+
     await r.set("w", "1", px=100)
     async with r.pipeline() as pipe:
         await pipe.watch("w")
         clock.advance_ms(200)
         pipe.multi()
         pipe.set("z", "1")
+        with pytest.raises(WatchError):
+            await pipe.execute()
+    assert await r.get("z") is None
+
+
+async def test_watch_of_missing_key_not_aborted_by_nothing(r, clock):
+    async with r.pipeline() as pipe:
+        await pipe.watch("never-existed")
+        clock.advance_ms(10_000)
+        pipe.multi()
+        pipe.set("z", "1")
         assert await pipe.execute() == [True]
+
+
+async def test_wrongtype_across_families(r):
+    from redis.exceptions import ResponseError
+
+    await r.set("s", "1")
+    await r.hset("h", "a", "1")
+    await r.sadd("st", "a")
+    await r.zadd("z", {"a": 1})
+    await r.xadd("x", {"a": "1"})
+    calls = {
+        "s": [
+            lambda: r.hset("s", "a", "1"),
+            lambda: r.sadd("s", "a"),
+            lambda: r.zadd("s", {"a": 1}),
+            lambda: r.xadd("s", {"a": "1"}),
+        ],
+        "h": [
+            lambda: r.get("h"),
+            lambda: r.sadd("h", "a"),
+            lambda: r.zadd("h", {"a": 1}),
+        ],
+        "st": [
+            lambda: r.zadd("st", {"a": 1}),
+            lambda: r.hgetall("st"),
+            lambda: r.get("st"),
+        ],
+        "z": [
+            lambda: r.smembers("z"),
+            lambda: r.hset("z", "a", "1"),
+            lambda: r.zrange("h", 0, -1),
+        ],
+        "x": [
+            lambda: r.get("x"),
+            lambda: r.zadd("x", {"a": 1}),
+            lambda: r.hset("x", "a", "1"),
+        ],
+    }
+    for group in calls.values():
+        for call in group:
+            with pytest.raises(ResponseError, match="WRONGTYPE"):
+                await call()
+    await r.set("h", "overwritten")  # SET replaces any type, like Redis
+    assert await r.get("h") == "overwritten"
+
+
+async def test_exec_runs_every_command_then_raises_first_error(r):
+    from redis.exceptions import ResponseError
+
+    await r.set("str", "x")
+    pipe = r.pipeline()
+    pipe.hset("h", "a", "1")
+    pipe.hset("str", "a", "1")  # WRONGTYPE at EXEC time
+    pipe.sadd("s", "m")
+    with pytest.raises(ResponseError, match="WRONGTYPE"):
+        await pipe.execute()
+    assert await r.hget("h", "a") == "1"  # commands before AND after still ran
+    assert await r.sismember("s", "m") is True
+
+
+async def test_every_command_yields_to_the_loop(r):
+    """Without an await point gather-based tests cannot interleave."""
+    import asyncio
+
+    order = []
+
+    async def a():
+        await r.set("a", "1")
+        order.append("a")
+
+    async def b():
+        order.append("b")
+
+    await asyncio.gather(a(), b())
+    assert order == ["b", "a"]
+
+
+async def test_exec_is_atomic_despite_yields(r):
+    import asyncio
+
+    pipe = r.pipeline()
+    pipe.set("k", "1")
+    pipe.set("k2", "2")
+    seen = []
+
+    async def watcher():
+        for _ in range(3):
+            seen.append((await r.get("k"), await r.get("k2")))
+
+    await asyncio.gather(pipe.execute(), watcher())
+    assert all((a is None) == (b is None) for a, b in seen)
 
 
 async def test_real_lock_round_trip(r, clock):

@@ -115,3 +115,16 @@ async def test_peek_keys_describe(keyed, fake_redis, clock):
 
 async def test_describe_empty(keyed):
     assert (await keyed.describe())["oldest_age_ms"] is None
+
+
+async def test_push_racing_drop_empty_never_loses_the_key(keyed, fake_redis):
+    """gather-interleaved: a push landing while an empty key is being dropped."""
+    for _ in range(5):
+        await fake_redis.sadd(keyed._k.keys, "w1")  # stale entry, key:w1 empty
+        await asyncio.gather(
+            keyed._drop_key_if_empty("w1"),
+            keyed.push("w1", {"n": 1}, message_id=f"m{_}"),
+        )
+        assert await fake_redis.zcard(keyed._k.key("w1")) >= 1
+        assert await fake_redis.sismember(keyed._k.keys, "w1")
+        await fake_redis.delete(keyed._k.key("w1"), keyed._k.msg(f"m{_}"))
