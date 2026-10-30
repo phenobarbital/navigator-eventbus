@@ -587,6 +587,18 @@ class FakeStreamsRedis:
         self._expire_if_due(name)
         return len(self.sets.get(name, set()))
 
+    async def sscan(self, name, cursor=0, match=None, count=None):
+        """Cursor = offset into the sorted members; 0 means the scan is complete."""
+        self._record("sscan", name, cursor, count=count)
+        name = _s(name)
+        self._check(name, "set")
+        members = sorted(self.sets.get(name, set()))
+        step = int(count or 10)
+        start = int(cursor)
+        chunk = members[start: start + step]
+        nxt = start + step
+        return (0 if nxt >= len(members) else nxt, chunk)
+
     async def sismember(self, name, member):
         self._record("sismember", name, member)
         name = _s(name)

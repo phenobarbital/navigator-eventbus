@@ -57,13 +57,14 @@ async def test_recover_resignals_orphan_key(keyed, fake_redis, clock):
     assert await keyed.recover(force=True) == 1
 
 
-async def test_recover_skips_locked_held_and_delayed(keyed, fake_redis, clock):
+async def test_recover_skips_locked_held_and_genuinely_delayed(keyed, fake_redis, clock):
     for k in ("locked", "held", "delayed", "plain"):
         await keyed.push(k, {})
+    lease = await keyed.lease_key("delayed")  # make "delayed"'s head genuinely not due
+    await keyed.apply(lease, Outcome.retry(delay_ms=900_000))
     fake_redis.streams[keyed._store.stream_for("punches-signal")].clear()
     await fake_redis.set(keyed._k.lock("locked"), "tok", px=10_000)
     await fake_redis.hset(keyed._k.held, "held", "{}")
-    await fake_redis.zadd(keyed._k.delayed, {"delayed": 1e15})
     assert await keyed.recover(force=True) == 1
     entry = fake_redis.streams[keyed._store.stream_for("punches-signal")][0][1]
     assert "plain" in str(entry)

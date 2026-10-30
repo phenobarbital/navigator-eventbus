@@ -85,7 +85,12 @@ def _to_message(raw: dict[Any, Any], message_id: Optional[str] = None) -> KeyedM
 
 
 class _Keys:
-    """Every Redis key name of one keyed queue (spec §2 key table)."""
+    """Every Redis key name of one keyed queue (spec §2 key table).
+
+    Besides the table's keys: ``recover_cursor`` (string, SSCAN cursor of the
+    throttled ``recover`` pass) and ``seq:<ms>`` (hash, ``n`` = pushes seen in
+    that millisecond; expires after a few seconds — the default-order tiebreak).
+    """
 
     def __init__(self, prefix: str, name: str) -> None:
         self.base = f"{prefix}{name}:"
@@ -95,6 +100,11 @@ class _Keys:
         self.all = self.base + "all"
         self.paused = self.base + "paused"
         self.recover = self.base + "recover"
+        self.recover_cursor = self.base + "recover_cursor"
+
+    def seq(self, now_ms: int) -> str:
+        """Per-millisecond arrival counter (short-lived hash) for default ordering."""
+        return f"{self.base}seq:{now_ms}"
 
     def key(self, k: str) -> str:
         """Sorted set of a key's pending message ids."""
@@ -329,6 +339,62 @@ class KeyedQueue:
             raise LeaseLost(f"message {message_id!r} was recreated")
         return current
 
+    async def _reconcile(self, key: str) -> bool:
+        """Make ``delayed[k]`` reflect the CURRENT head of *key*.
+
+        Head held → no entry. Head waiting/not due → entry at its deadline.
+        Head leasable now → entry removed and the key signalled (returns
+        ``True``). Empty key → dropped. Called after every outcome and by
+        :meth:`recover`; eventually consistent, never a source of truth.
+        """
+        head = await self._redis.zrange(self._k.key(key), 0, 0)
+        if not head:
+            await self._drop_key_if_empty(key)
+            return False
+        mid = _as_str(head[0])
+        raw = await self._redis.hgetall(self._k.msg(mid))
+        if not raw:  # dangling member: a lease attempt repairs it
+            await self._signal(key)
+            return True
+        if await self._redis.hget(self._k.held, key) is not None:
+            await self._redis.zrem(self._k.delayed, key)
+            return False
+        message = _to_message(raw, mid)
+        now = self.now_ms()
+        deadline = 0
+        if message.state == "waiting" and (message.wait_until_ms or 0) > now:
+            deadline = message.wait_until_ms or 0
+        if (message.due_ms or 0) > now:
+            deadline = max(deadline, message.due_ms or 0)
+        if deadline:
+            await self._redis.zadd(self._k.delayed, {key: float(deadline)})
+            return False
+        await self._redis.zrem(self._k.delayed, key)
+        await self._signal(key)
+        return True
+
+    async def _default_score(self, now: int) -> float:
+        """Arrival-ordered default score: ``now_ms + k / 1024``.
+
+        ``k`` is the 0-based count of pushes already seen in this millisecond
+        (``HINCRBY`` on a per-ms hash: atomic, contention-free, never wraps
+        across milliseconds). Multiples of ``2**-10`` are exactly representable
+        in a double for any epoch-ms below ``2**43`` (~year 2248), so the
+        ordering is exact. Past 1023 pushes in one millisecond the offset is
+        clamped (ties then fall back to ``message_id``) and a warning is logged.
+        """
+        counter = self._k.seq(now)
+        n = int(await self._redis.hincrby(counter, "n", 1))
+        if n == 1:
+            await self._redis.pexpire(counter, 5_000)
+        if n > 1024:
+            self.logger.warning(
+                "keyed queue %s: >1024 default-order pushes in one millisecond; "
+                "same-ms ordering degrades to message_id",
+                self.config.name,
+            )
+        return float(now) + min(n - 1, 1023) / 1024.0
+
     # ------------------------------------------------------------------
     # push
     # ------------------------------------------------------------------
@@ -367,10 +433,7 @@ class KeyedQueue:
         if order is not None:
             score = float(order)
         else:
-            # Default order = enqueue time; a shared counter adds a sub-ms
-            # fraction so same-millisecond pushes keep arrival order.
-            seq = await self._redis.hincrby(self._k.base + "seq", "n", 1)
-            score = float(now) + (int(seq) % 1000) / 1000.0
+            score = await self._default_score(now)
         msg_name = self._k.msg(mid)
         fields = {
             "message_id": mid,
@@ -427,10 +490,10 @@ class KeyedQueue:
             A :class:`KeyedLease`, or ``None`` (paused, no signal, or nothing
             leasable among the signals examined).
         """
-        if await self.is_paused():
-            return None
         group = self.config.signal.groups[0].name
         for attempt in range(_MAX_SIGNALS_PER_LEASE):
+            if await self.is_paused():
+                return None
             delivered = await self._store.receive(
                 self.config.signal,
                 group,
@@ -440,6 +503,16 @@ class KeyedQueue:
             if not delivered:
                 return None
             item = delivered[0]
+            if await self.is_paused():
+                # A pause set while receive() was in flight: do not consume the
+                # signal — hand it straight back for redelivery after resume.
+                try:
+                    await self._store.change_visibility(
+                        self.config.signal, item.receipt, 0
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.debug("could not nack signal during pause: %s", exc)
+                return None
             key = item.envelope.payload.get("key")
             if not key:
                 await self._ack_signal(item.receipt)
@@ -682,11 +755,8 @@ class KeyedQueue:
 
         # EXEC succeeded: the state change is correct whatever happens below.
         await self._release(lease.lock)
-        if kind == "ack":
-            if await self._redis.zcard(self._k.key(key)) > 0:
-                await self._signal(key)
-            else:
-                await self._drop_key_if_empty(key)
+        if kind != "hold":
+            await self._reconcile(key)
         await self._ack_signal(lease.receipt)
 
     # ------------------------------------------------------------------
@@ -822,12 +892,14 @@ class KeyedQueue:
         """Re-signal keys whose wake-up may have been lost (signal rule 5).
 
         Throttled by ``SET recover NX PX recover_interval_ms`` — a rate limit,
-        not a leader: whoever wins runs one pass and owns nothing afterwards.
-        A key is signalled when it is not locked, not held and has no
-        ``delayed`` entry.
+        not a leader. Each pass examines at most ``recover_batch`` keys (an
+        ``SSCAN`` batch; the cursor is persisted in Redis), so a full sweep of
+        a large key set takes ``ceil(keys / recover_batch)`` intervals. A key
+        is skipped when locked or held; otherwise :meth:`_reconcile` compares
+        ``delayed`` with its CURRENT head and signals it when leasable now.
 
         Args:
-            force: Skip the throttle.
+            force: Skip the throttle and sweep the whole key set in one call.
 
         Returns:
             The number of signals sent.
@@ -842,17 +914,24 @@ class KeyedQueue:
             if not won:
                 return 0
         sent = 0
-        for raw in sorted(await self._redis.smembers(self._k.keys)):
-            key = _as_str(raw)
-            if await self._redis.exists(self._k.lock(key)):
-                continue
-            if await self._redis.hget(self._k.held, key) is not None:
-                continue
-            if await self._redis.zscore(self._k.delayed, key) is not None:
-                continue
-            await self._signal(key)
-            sent += 1
-        return sent
+        batch = self.config.recover_batch
+        while True:
+            raw_cursor = await self._redis.get(self._k.recover_cursor)
+            cursor = int(_as_str(raw_cursor)) if raw_cursor is not None else 0
+            next_cursor, members = await self._redis.sscan(
+                self._k.keys, cursor, count=batch
+            )
+            if int(next_cursor) == 0:
+                await self._redis.delete(self._k.recover_cursor)
+            else:
+                await self._redis.set(self._k.recover_cursor, str(int(next_cursor)))
+            for raw in sorted({_as_str(m) for m in members}):
+                if await self._redis.exists(self._k.lock(raw)):
+                    continue
+                if await self._reconcile(raw):
+                    sent += 1
+            if not force or int(next_cursor) == 0:
+                return sent
 
     async def release_hold(self, key: str) -> bool:
         """Clear a hold; the head becomes pending and the key is signalled.
