@@ -3,7 +3,26 @@
 All notable changes to `navigator-eventbus` are documented in this file.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.4.0] — Unreleased
+## [0.5.0] — Unreleased
+
+FEAT-713 — KeyedQueue. (The release number is chosen at release time; 0.5.0 is a placeholder.)
+
+### Added — FEAT-713 KeyedQueue
+- `navigator_eventbus.queues.keyed`: `KeyedQueue`, `KeyedConsumer`, `KeyedLease`, `drain`,
+  `KeyedQueueConfig`, `KeyedMessage`, `Outcome`, `DrainReport`, `LeaseLost` (also lazily exported
+  from `navigator_eventbus.queues`).
+- Per-key FIFO ordered by a caller-supplied score, at most one message in flight per key
+  cluster-wide (per-key `redis.asyncio` lock), fenced `apply` (lock token + generation in one
+  `WATCH`/`MULTI`), atomic idempotent `push(message_id=...)`.
+- Head-blocking outcomes: `ack`, `retry(delay)`, `wait(until)` (always with a safety deadline),
+  `hold(reason)` + `release_hold`.
+- Leaderless operations: `promote_due`, `recover` (throttled re-signal of lost wake-ups: full sweep per pass, per-signal liveness markers, quiet during backlog/pause; bound = signal visibility + `recover_interval_ms`),
+  `pause(ttl)` / `resume`, `max_age_ms` expiry and `max_attempts` handed to `on_dlq`.
+- `drain(handler, key_prefix=...)`: direct administrative flush — concurrent across keys,
+  sequential inside a key, same lock as the consumers, fail-fast.
+- No Lua of our own; no change to `QueueStore`, `RedisStreamsBackend` or `BusCore`.
+
+## [0.4.0] — 2026-10-21
 
 FEAT-431 — Unified Broker Manager + brokers hardening.
 

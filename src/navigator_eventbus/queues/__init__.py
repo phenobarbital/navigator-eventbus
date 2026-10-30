@@ -33,6 +33,13 @@ from navigator_eventbus.queues.config import (
     QueueRegistry,
     assert_prefixes_disjoint,
 )
+from navigator_eventbus.queues.keyed.config import (
+    DrainReport,
+    KeyedMessage,
+    KeyedQueueConfig,
+    LeaseLost,
+    Outcome,
+)
 from navigator_eventbus.queues.models import (
     QueueAttributes,
     ReceivedMessage,
@@ -44,9 +51,16 @@ from navigator_eventbus.queues.receipts import Receipt, ReceiptCodec, ReceiptErr
 if TYPE_CHECKING:  # pragma: no cover
     from navigator_eventbus.queues.api import QueueAPI
     from navigator_eventbus.queues.feeder import QueueFeeder
+    from navigator_eventbus.queues.keyed.consumer import KeyedConsumer
+    from navigator_eventbus.queues.keyed.drainer import drain
+    from navigator_eventbus.queues.keyed.store import KeyedLease, KeyedQueue
     from navigator_eventbus.queues.store import QueueStore
 
 _LAZY_MAP = {
+    "KeyedConsumer": "navigator_eventbus.queues.keyed.consumer",
+    "KeyedLease": "navigator_eventbus.queues.keyed.store",
+    "KeyedQueue": "navigator_eventbus.queues.keyed.store",
+    "drain": "navigator_eventbus.queues.keyed.drainer",
     "QueueAPI": "navigator_eventbus.queues.api",
     "QueueFeeder": "navigator_eventbus.queues.feeder",
     "QueueStore": "navigator_eventbus.queues.store",
@@ -55,8 +69,16 @@ _LAZY_MAP = {
 
 __all__ = (
     "DEFAULT_QUEUE_PREFIX",
+    "DrainReport",
+    "KeyedConsumer",
+    "KeyedLease",
+    "KeyedMessage",
+    "KeyedQueue",
+    "KeyedQueueConfig",
+    "LeaseLost",
     "MAX_BATCH_ENTRIES",
     "MAX_WAIT_TIME_SECONDS",
+    "Outcome",
     "QueueAPI",
     "QueueAttributes",
     "QueueConfig",
@@ -72,6 +94,7 @@ __all__ = (
     "ReceivedMessage",
     "StaleReceipt",
     "assert_prefixes_disjoint",
+    "drain",
 )
 
 
