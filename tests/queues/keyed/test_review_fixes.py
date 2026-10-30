@@ -546,3 +546,87 @@ async def test_r3_4_lost_signal_bound_is_visibility_plus_interval(fake_redis, cl
     assert signalled_at is not None, "never recovered"
     assert signalled_at >= visibility  # never earlier than the marker's window
     assert signalled_at <= visibility + interval
+
+
+# ---------------------------------------------------------------------------
+# Round 4
+# ---------------------------------------------------------------------------
+
+
+async def test_r4_1_phantom_lag_does_not_disable_recover(keyed, fake_redis, monkeypatch):
+    """Redis 7.0.x can report lag=1 with nothing left to deliver (group created on an
+    empty stream, then the unread entry XDEL'd): lag must never be proof of backlog."""
+    stream = keyed._store.stream_for("punches-signal")
+    await keyed._store._ensure_group(stream, "workers")  # group exists on an empty stream
+    await keyed.push("w1", {})
+    await fake_redis.xdel(stream, *stream_ids(keyed, fake_redis))  # the unread signal is gone
+    await fake_redis.delete(keyed._k.sig("w1"))  # and its marker lapsed
+    real = fake_redis.xinfo_groups
+
+    async def phantom_lag(name):
+        return [{**g, "lag": 1} for g in await real(name)]
+
+    monkeypatch.setattr(fake_redis, "xinfo_groups", phantom_lag)
+    assert await keyed._has_backlog() is False  # no entry after last-delivered-id
+    assert await keyed.recover(force=True) == 1  # the stranded head is re-signalled
+    assert await keyed._has_backlog() is True  # now a REAL undelivered entry exists
+
+
+async def test_r4_1_lag_zero_is_only_a_shortcut_for_no_backlog(keyed, fake_redis, monkeypatch):
+    await keyed.push("w1", {})
+    real = fake_redis.xinfo_groups
+    asked = {"xrange": 0}
+    real_xrange = fake_redis.xrange
+
+    async def counting_xrange(*a, **kw):
+        asked["xrange"] += 1
+        return await real_xrange(*a, **kw)
+
+    async def lag_zero(name):
+        return [{**g, "lag": 0} for g in await real(name)]
+
+    monkeypatch.setattr(fake_redis, "xrange", counting_xrange)
+    monkeypatch.setattr(fake_redis, "xinfo_groups", lag_zero)
+    await keyed._store._ensure_group(keyed._store.stream_for("punches-signal"), "workers")
+    assert await keyed._has_backlog() is False
+    assert asked["xrange"] == 0  # shortcut taken, no extra round trip
+
+
+async def test_r4_2_crashed_holder_bound_is_max_of_lock_ttl_and_visibility(fake_redis, clock, dlq):
+    """Documented bound: max(lock_ttl_ms, signal visibility) — the abandoned signal is
+    reclaimable only after its visibility window, even though the lock lapses sooner."""
+    holder = build(fake_redis, clock, dlq)
+    other = build(fake_redis, clock, dlq)
+    visibility = holder.config.signal.default_visibility_timeout_ms
+    lock_ttl = holder.config.lock_ttl_ms
+    await holder.push("w1", {})
+    assert await holder.lease() is not None  # ... and the holder "crashes" (no apply)
+    waited, got = 0, None
+    while waited <= visibility + 1_000:
+        got = await other.lease()
+        if got is not None:
+            break
+        clock.advance_ms(1_000)
+        waited += 1_000
+    assert got is not None, "never re-leased"
+    assert waited >= lock_ttl  # not before the lock lapsed
+    assert waited <= max(lock_ttl, visibility)  # the documented bound
+    assert visibility > lock_ttl  # (enforced by KeyedQueueConfig) so the bound is the visibility
+
+
+async def test_r4_3_recover_duplicates_are_bounded_per_visibility_window(fake_redis, clock, dlq):
+    """An abandoned leased signal whose marker lapsed: recover adds at most one
+    duplicate per signal-visibility window, however many passes run."""
+    q = build(fake_redis, clock, dlq)
+    visibility = q.config.signal.default_visibility_timeout_ms
+    await q.push("w1", {})
+    assert await q.lease() is not None  # abandoned: signal pending, never acked
+    before = len(stream_ids(q, fake_redis))
+    elapsed = 0
+    for _ in range(60):
+        clock.advance_ms(10_000)
+        elapsed += 10_000
+        await q.recover(force=True)
+    grown = len(stream_ids(q, fake_redis)) - before
+    assert grown <= -(-elapsed // visibility)  # ceil(elapsed / visibility)
+    assert grown >= 1  # and liveness is preferred: the stranded key WAS re-signalled

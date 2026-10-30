@@ -126,7 +126,8 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
 **Signal lifetime rules (v0.2, load-bearing for liveness).**
 1. The consumer that wins the per-key lock **keeps its signal un-acked** until `apply()`
    finishes; `apply()` deletes it. If that consumer dies, the signal is reclaimed by the pull
-   plane and the next consumer finds the lock free once `lock_ttl_ms` has passed.
+   plane after its visibility window and the next consumer finds the lock already free: a
+   crashed holder delays its key by at most `max(lock_ttl_ms, signal visibility)`.
 2. Therefore the signal lease must outlive the lock: `signal.default_visibility_timeout_ms`
    **>** `lock_ttl_ms` (validated in `KeyedQueueConfig`), and `KeyedLease.extend()` extends
    the signal visibility together with the lock.
@@ -473,7 +474,7 @@ def keyed(fake_redis, clock) -> KeyedQueue:
 - [ ] `drain` never delivers a key that a live consumer holds (`busy`), and never delivers out of order inside a key.
 - [ ] No change to `QueueStore`, `RedisStreamsBackend`, `BusCore` behaviour; `tests/queues/test_store.py` unchanged and green.
 - [ ] `CHANGELOG.md` 0.5.0 entry, README subsection, lazy exports.
-- [ ] A pause never consumes signal deliveries; a consumer crash delays a key by at most `lock_ttl_ms`, and a lost signal (no backlog) by at most `signal visibility + recover_interval_ms`, never forever.
+- [ ] A pause never consumes signal deliveries; a consumer crash delays a key by at most `max(lock_ttl_ms, signal visibility)` (the abandoned signal becomes reclaimable only after its visibility window; visibility > `lock_ttl_ms`), and a lost signal (no backlog) by at most `signal visibility + recover_interval_ms`, never forever.
 - [ ] `apply` is fenced by token + generation in one `WATCH`/`MULTI`; a stale outcome changes nothing.
 - [ ] A retry delay is honoured even when the key is re-signalled early.
 - [ ] `drain(key_prefix=…)` never touches keys outside the prefix.
@@ -578,6 +579,13 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 - Redis data loss empties the queue silently. The contract is explicit: callers rebuild via idempotent `push` from their record at startup / in their flush. `recover()` does not help here: it re-signals keys that still exist in Redis.
 - **Re-push after ack recreates the message** (the hash is deleted on ack). Callers that re-push from their record must have the handler consult that record and `ack` without side effects when the work is already done.
 - **Ordering is among queued messages only.** A message pushed after a later-scored message of the same key was already acked sorts first among what is left, but cannot undo the earlier delivery. Callers needing stronger guarantees enforce them in the handler.
+- **`recover` may add bounded duplicate signals.** At most one duplicate signal per key per
+  signal-visibility window (an abandoned leased signal whose `sig:<k>` member lapsed before the
+  pull plane reclaimed it), and one per overlapping pass (two sweeps running at once after the
+  throttle TTL lapsed). Duplicates are acked as busy/empty at the cost of one no-op lease;
+  liveness is preferred over exact-once signalling. Likewise `XINFO GROUPS` `lag` is never
+  trusted as proof of backlog (Redis 7.0.x can report a phantom `lag >= 1`): backlog means an
+  entry really exists after `last-delivered-id`.
 - **DLQ handoff is best-effort persistence**: `DLQHandler.on_dlq` persists in a background task and swallows failures (`dlq.py:195-227`), and its replay republishes to the bus, not into a `KeyedQueue`. The caller's record stays the recovery source for expired messages.
 
 ### External Dependencies

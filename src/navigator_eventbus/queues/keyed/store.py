@@ -290,11 +290,14 @@ class KeyedQueue:
             await self._redis.zrem(self._k.sig(key), receipt.message_id)
 
     async def _has_backlog(self) -> bool:
-        """True while the signal group has undelivered entries.
+        """True while an undelivered signal entry actually exists.
 
-        ``XINFO GROUPS`` ``lag`` when Redis knows it; otherwise (``lag`` is
-        ``None`` after ``XDEL``/``XTRIM``) a bounded ``XRANGE`` after the
-        group's ``last-delivered-id``.
+        ``lag`` is never proof of backlog: Redis 7.0.x can report ``lag >= 1``
+        with nothing left to deliver (group created on an empty stream, then the
+        unread entry ``XDEL``'d or trimmed), which would switch ``recover`` off
+        for good. ``lag == 0`` is trusted only as a fast "no backlog" shortcut;
+        otherwise a bounded ``XRANGE`` looks for a real entry after the group's
+        ``last-delivered-id`` (or any entry when the group does not exist yet).
         """
         stream = self._store.stream_for(self.config.signal.name)
         group = self.config.signal.groups[0].name
@@ -307,8 +310,8 @@ class KeyedQueue:
             if _as_str(data.get("name", "")) != group:
                 continue
             lag = data.get("lag")
-            if lag is not None:
-                return int(lag) > 0
+            if lag is not None and int(lag) == 0:
+                return False  # shortcut only
             last = _as_str(data.get("last-delivered-id", "0-0"))
             return bool(await self._redis.xrange(stream, min=f"({last}", max="+", count=1))
         # No group yet (it is created from id "0" at the first receive): every
@@ -969,6 +972,11 @@ class KeyedQueue:
         — or the queue is paused — recovery waits for the backlog to drain /
         the pause to end: every queued key will be served first and nothing is
         amplified.
+
+        Duplicates are harmless and bounded: at most one extra signal per key per
+        signal-visibility window (and one per overlapping pass); they are acked as
+        busy/empty. A crashed holder (not a lost signal) delays its key by at most
+        ``max(lock_ttl_ms, signal visibility)``.
 
         Throttled by ``SET recover NX PX recover_interval_ms`` — a rate limit,
         not a leader. One pass sweeps the WHOLE key set (``SSCAN`` until the

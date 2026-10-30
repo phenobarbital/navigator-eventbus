@@ -156,3 +156,23 @@ async def test_backlog_detection_and_per_signal_markers_on_real_redis(client):
         await queue.apply(lease, Outcome.ack())
         assert lease.receipt.message_id not in await client.zrange(queue._k.sig(lease.key), 0, -1)
     assert await queue._has_backlog() is False
+
+
+async def test_phantom_lag_does_not_disable_recover_on_real_redis(client, capsys):
+    """Group created on an empty stream, signal pushed, then XDEL'd before delivery:
+    Redis 7.0.x may report a phantom lag=1. recover must still re-signal the key."""
+    queue = make_queue(client)
+    stream = queue._store.stream_for(queue.config.signal.name)
+    group = queue.config.signal.groups[0].name
+    await queue._store._ensure_group(stream, group)  # group on a (mkstream'd) empty stream
+    await queue.push("w1", {})
+    for entry_id, _ in await client.xrange(stream):
+        await client.xdel(stream, entry_id)  # the unread signal vanishes
+    await client.delete(queue._k.sig("w1"))  # and its marker lapsed
+    info = await client.info("server")
+    lag = [g.get("lag") for g in await client.xinfo_groups(stream) if g["name"] == group]
+    with capsys.disabled():
+        print(f"\n[R4-1] redis_version={info['redis_version']} xinfo lag after XDEL={lag}")
+    assert await queue._has_backlog() is False
+    assert await queue.recover(force=True) == 1
+    assert await queue._has_backlog() is True

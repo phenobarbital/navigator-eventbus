@@ -209,7 +209,8 @@ How it stays live: a wake-up *signal* (a normal pull queue) is only a hint; the 
 set is the order and the per-key lock the exclusion. The signal lease outlives the lock
 (`signal.default_visibility_timeout_ms > lock_ttl_ms`), consumers never `receive()` while
 paused, and `recover()` re-signals keys whose hint was lost. A crashed holder delays its key at
-most `lock_ttl_ms`; with no backlog a lost signal is recovered within *signal visibility +
+most `max(lock_ttl_ms, signal visibility)` (its abandoned signal is reclaimed only after the
+visibility window); with no backlog a lost signal is recovered within *signal visibility +
 `recover_interval_ms`*, and while the signal group has undelivered entries (or the queue is
 paused) `recover()` waits for the backlog to drain instead of amplifying it.
 
@@ -220,6 +221,9 @@ Caveats:
 - `KeyedConsumer` turns handler exceptions and timeouts into `retry`. A handler with a
   non-idempotent side effect must catch `asyncio.CancelledError`/`TimeoutError` itself and
   return its own outcome. A stale outcome (lock expired) raises `LeaseLost` and changes nothing.
+- `recover()` may add at most one duplicate signal per key per signal-visibility window (and one
+  per overlapping pass). Duplicates are acked as busy/empty; liveness is preferred over
+  exact-once signalling.
 - Direct `lease()` users must call `lease.extend()` for handlers longer than `lock_ttl_ms`.
 
 ### BusCore / EventBus facade (`evb.py`, `core.py`)
