@@ -121,7 +121,7 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
 | `paused` | string | reason; `PX` = pause TTL |
 | `recover` | string | `SET NX PX recover_interval_ms` throttle token for `recover()` — a rate limit, not a leader: whoever wins runs one pass, nobody owns anything |
 | `recover_cursor` | string | SSCAN cursor of the throttled `recover()` sweep (≤ `recover_batch` keys per pass); absent when a sweep completed |
-| `seq:<ms>` | hash | `n` = pushes seen in that millisecond (TTL 5 s); default `order` = `now_ms + (n-1)/1024`, exact in a double and arrival-ordered up to 1024 pushes/ms |
+| `lastscore` | string | last default `order` handed out (read + written inside `push`'s WATCH/MULTI): default `order` = `max(now_ms, last + 2^-10)` — strictly increasing for any burst, exact in a double (multiples of 2^-10, epoch-ms < 2^43) |
 
 **Signal lifetime rules (v0.2, load-bearing for liveness).**
 1. The consumer that wins the per-key lock **keeps its signal un-acked** until `apply()`

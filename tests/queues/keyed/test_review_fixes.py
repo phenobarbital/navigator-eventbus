@@ -302,3 +302,37 @@ def test_drain_export_is_the_function_not_the_submodule():
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Round 2
+# ---------------------------------------------------------------------------
+
+
+async def test_r2_1_unbounded_same_ms_burst_keeps_arrival_order(keyed, fake_redis):
+    """Frozen clock, 5,000 default-order pushes: strictly increasing exact scores."""
+    n = 5_000
+    for i in range(n):
+        await keyed.push("w1", {"i": i}, message_id=f"id-{n - i:05d}")
+    scored = await fake_redis.zrange(keyed._k.key("w1"), 0, -1, withscores=True)
+    scores = [sc for _, sc in scored]
+    assert len(set(scores)) == n and scores == sorted(scores)
+    assert all(sc * 1024 == int(sc * 1024) for sc in scores)  # exact multiples of 2**-10
+    assert [(await keyed.peek("w1", limit=3))[j].body["i"] for j in range(3)] == [0, 1, 2]
+    assert await _drain_order(keyed, "w1", 1_100) == list(range(1_100))
+
+
+async def test_r2_1_interleaved_producers(fake_redis, clock, dlq):
+    qa, qb = build(fake_redis, clock, dlq), build(fake_redis, clock, dlq)
+
+    async def produce(q, tag, n):
+        for i in range(n):
+            await q.push("w1", {"tag": tag, "i": i})
+
+    await asyncio.gather(produce(qa, "a", 700), produce(qb, "b", 700))
+    heads = await qa.peek("w1", limit=1_400)
+    for tag in ("a", "b"):
+        seq = [m.body["i"] for m in heads if m.body["tag"] == tag]
+        assert seq == list(range(700))  # each producer's own order is preserved
+    scored = await fake_redis.zrange(qa._k.key("w1"), 0, -1, withscores=True)
+    assert len({sc for _, sc in scored}) == 1_400  # no ties anywhere

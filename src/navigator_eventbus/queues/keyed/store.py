@@ -6,8 +6,10 @@ The signal stream (a composed :class:`QueueStore`) only carries *hints* — "key
 own: every atomic step is a single command, a ``Lock`` call, or a
 ``WATCH``/``MULTI``/``EXEC`` transaction.
 """
+import asyncio
 import json
 import math
+import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -97,8 +99,8 @@ class _Keys:
     """Every Redis key name of one keyed queue (spec §2 key table).
 
     Besides the table's keys: ``recover_cursor`` (string, SSCAN cursor of the
-    throttled ``recover`` pass) and ``seq:<ms>`` (hash, ``n`` = pushes seen in
-    that millisecond; expires after a few seconds — the default-order tiebreak).
+    throttled ``recover`` pass) and ``lastscore`` (string, the last default
+    ``order`` handed out — read and written inside ``push``'s WATCH/MULTI).
     """
 
     def __init__(self, prefix: str, name: str) -> None:
@@ -110,10 +112,7 @@ class _Keys:
         self.paused = self.base + "paused"
         self.recover = self.base + "recover"
         self.recover_cursor = self.base + "recover_cursor"
-
-    def seq(self, now_ms: int) -> str:
-        """Per-millisecond arrival counter (short-lived hash) for default ordering."""
-        return f"{self.base}seq:{now_ms}"
+        self.lastscore = self.base + "lastscore"
 
     def key(self, k: str) -> str:
         """Sorted set of a key's pending message ids."""
@@ -389,28 +388,6 @@ class KeyedQueue:
         await self._signal(key)
         return True
 
-    async def _default_score(self, now: int) -> float:
-        """Arrival-ordered default score: ``now_ms + k / 1024``.
-
-        ``k`` is the 0-based count of pushes already seen in this millisecond
-        (``HINCRBY`` on a per-ms hash: atomic, contention-free, never wraps
-        across milliseconds). Multiples of ``2**-10`` are exactly representable
-        in a double for any epoch-ms below ``2**43`` (~year 2248), so the
-        ordering is exact. Past 1023 pushes in one millisecond the offset is
-        clamped (ties then fall back to ``message_id``) and a warning is logged.
-        """
-        counter = self._k.seq(now)
-        n = int(await self._redis.hincrby(counter, "n", 1))
-        if n == 1:
-            await self._redis.pexpire(counter, 5_000)
-        if n > 1024:
-            self.logger.warning(
-                "keyed queue %s: >1024 default-order pushes in one millisecond; "
-                "same-ms ordering degrades to message_id",
-                self.config.name,
-            )
-        return float(now) + min(n - 1, 1023) / 1024.0
-
     # ------------------------------------------------------------------
     # push
     # ------------------------------------------------------------------
@@ -435,8 +412,9 @@ class KeyedQueue:
             key: Ordering key.
             body: JSON-serialisable message body.
             message_id: Idempotency id (default: a fresh uuid).
-            order: Sort score within the key (default: enqueue time in ms plus a
-                sub-ms arrival counter, so same-ms pushes stay in order).
+            order: Sort score within the key. Default: enqueue time in ms,
+                bumped by 2**-10 per push when a burst outruns the clock, so
+                the default is strictly increasing in arrival order.
 
         Returns:
             The message id.
@@ -446,26 +424,15 @@ class KeyedQueue:
         """
         mid = message_id or uuid4().hex
         now = self.now_ms()
-        if order is not None:
-            score = float(order)
-        else:
-            score = await self._default_score(now)
         msg_name = self._k.msg(mid)
-        fields = {
-            "message_id": mid,
-            "key": key,
-            "body": json.dumps(body, default=str),
-            "order": repr(score),
-            "created_ms": str(now),
-            "attempts": "0",
-            "state": "pending",
-            "gen": "0",
-        }
-        for _ in range(8):
+        last_name = self._k.lastscore
+        for attempt in range(64):
             pipe = self._redis.pipeline(transaction=True)
             try:
                 async with pipe:
-                    await pipe.watch(msg_name)
+                    # WATCH the shared "last default score" only when we need it,
+                    # so explicit-order pushes never contend on it.
+                    await pipe.watch(msg_name, *([last_name] if order is None else []))
                     existing = await pipe.hget(msg_name, "key")
                     if existing is not None:
                         if _as_str(existing) != key:
@@ -473,18 +440,44 @@ class KeyedQueue:
                                 f"message_id {mid!r} already exists under key "
                                 f"{_as_str(existing)!r}, not {key!r}"
                             )
+                        break
+                    if order is not None:
+                        score = float(order)
                     else:
-                        pipe.multi()
-                        pipe.hset(msg_name, mapping=fields)
-                        pipe.zadd(self._k.key(key), {mid: score})
-                        pipe.sadd(self._k.keys, key)
-                        pipe.zadd(self._k.all, {mid: float(now)})
-                        await pipe.execute()
+                        # Strictly increasing for any burst: enqueue ms, or the
+                        # previous default score + 2**-10 when that is later
+                        # (a burst borrows from the next ms). Multiples of 2**-10
+                        # are exact in a double for epoch-ms < 2**43.
+                        last = await pipe.get(last_name)
+                        score = float(now)
+                        if last is not None:
+                            score = max(score, float(_as_str(last)) + 1.0 / 1024.0)
+                    pipe.multi()
+                    pipe.hset(
+                        msg_name,
+                        mapping={
+                            "message_id": mid,
+                            "key": key,
+                            "body": json.dumps(body, default=str),
+                            "order": repr(score),
+                            "created_ms": str(now),
+                            "attempts": "0",
+                            "state": "pending",
+                            "gen": "0",
+                        },
+                    )
+                    pipe.zadd(self._k.key(key), {mid: score})
+                    pipe.sadd(self._k.keys, key)
+                    pipe.zadd(self._k.all, {mid: float(now)})
+                    if order is None:
+                        pipe.set(last_name, repr(score))
+                    await pipe.execute()
                 break
             except WatchError:
+                await asyncio.sleep(random.uniform(0, 0.002) * min(attempt + 1, 8))
                 continue
-        else:  # pragma: no cover — 8 consecutive conflicts on one message id
-            raise RuntimeError(f"push of {mid!r} lost 8 WATCH races")
+        else:
+            raise RuntimeError(f"push of {mid!r} lost 64 WATCH races")
         await self._signal(key)
         return mid
 
