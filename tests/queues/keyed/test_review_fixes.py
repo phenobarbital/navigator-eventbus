@@ -1,12 +1,13 @@
 # ruff: noqa: F811
 """Regression tests for the independent FEAT-713 review (Codex + Claude, 2026-10-30)."""
 import asyncio
+import json
 
 import pytest
 
 from navigator_eventbus.queues.keyed.config import LeaseLost, Outcome
 
-from .test_store import DLQ, build, clock, dlq, fake_redis, keyed  # noqa: F401
+from .test_store import DLQ, build, clock, dlq, fake_redis, keyed, lose_signals  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Group 1 — fences
@@ -151,7 +152,7 @@ async def test_ack_after_deadline_head_does_not_leave_stale_delayed(keyed, fake_
     assert forced.message.body == {"i": 1}
     await keyed.apply(forced, Outcome.ack())
     assert await fake_redis.zscore(keyed._k.delayed, "w1") is None  # head 2 is leasable now
-    fake_redis.streams[keyed._store.stream_for("punches-signal")].clear()  # lose the signal
+    lose_signals(keyed, fake_redis)
     assert await keyed.recover(force=True) == 1
     assert (await keyed.lease()).message.body == {"i": 2}
 
@@ -169,23 +170,11 @@ async def test_lower_order_push_during_retry_is_not_orphaned(keyed, fake_redis):
 async def test_recover_signals_key_whose_current_head_is_due_despite_stale_delayed(keyed, fake_redis):
     await keyed.push("w1", {})
     await fake_redis.zadd(keyed._k.delayed, {"w1": 1e15})  # stale far-future entry
-    fake_redis.streams[keyed._store.stream_for("punches-signal")].clear()
+    lose_signals(keyed, fake_redis)
     assert await keyed.recover(force=True) == 1
     assert await fake_redis.zscore(keyed._k.delayed, "w1") is None
 
 
-async def test_recover_is_bounded_per_pass(fake_redis, clock, dlq):
-    q = build(fake_redis, clock, dlq, recover_batch=500)
-    for i in range(1_200):
-        await fake_redis.zadd(q._k.key(f"k{i:04d}"), {f"m{i}": 1})
-        await fake_redis.hset(q._k.msg(f"m{i}"), mapping={"key": f"k{i:04d}", "body": "{}"})
-        await fake_redis.sadd(q._k.keys, f"k{i:04d}")
-    sent = []
-    for _ in range(3):
-        sent.append(await q.recover())
-        clock.advance_ms(60_001)
-    assert max(sent) <= 500 and sum(sent) == 1_200  # cursor persisted: full coverage in 3 passes
-    assert await q.recover(force=True) == 1_200  # force = one full pass
 
 
 # ---------------------------------------------------------------------------
@@ -336,3 +325,73 @@ async def test_r2_1_interleaved_producers(fake_redis, clock, dlq):
         assert seq == list(range(700))  # each producer's own order is preserved
     scored = await fake_redis.zrange(qa._k.key("w1"), 0, -1, withscores=True)
     assert len({sc for _, sc in scored}) == 1_400  # no ties anywhere
+
+
+async def _orphans(q, fake_redis, n):
+    """n keys with a pending head, no signal, no marker (what a lost signal leaves)."""
+    for i in range(n):
+        key = f"k{i:05d}"
+        await fake_redis.zadd(q._k.key(key), {f"m{i}": 1})
+        await fake_redis.hset(q._k.msg(f"m{i}"), mapping={"key": key, "body": "{}"})
+        await fake_redis.sadd(q._k.keys, key)
+
+
+@pytest.mark.parametrize("whole_set", [False, True])
+async def test_r2_recover_one_pass_covers_every_orphan(clock, dlq, whole_set):
+    """(a)+(c): one interval recovers any number of orphans, whatever SSCAN returns."""
+    from .._fake_streams import FakeStreamsRedis
+
+    redis = FakeStreamsRedis(clock, sscan_whole_set=whole_set)
+    q = build(redis, clock, dlq)
+    await _orphans(q, redis, 1_300)
+    assert await q.recover() == 1_300  # ONE throttled pass, not ceil(n/batch) intervals
+    assert await q.recover() == 0  # throttled
+    assert await q.recover(force=True) == 0  # every key has a live marker: no duplicates
+    stream = redis.streams[q._store.stream_for("punches-signal")]
+    assert len(stream) == 1_300
+
+
+async def test_r2_live_signal_is_never_resignalled(keyed, fake_redis, clock):
+    """(b): a key with a live signal is skipped across N passes (no amplification)."""
+    await keyed.push("w1", {})
+    stream = fake_redis.streams[keyed._store.stream_for("punches-signal")]
+    assert len(stream) == 1
+    for _ in range(6):
+        assert await keyed.recover(force=True) == 0
+        clock.advance_ms(1_000)
+    assert len(stream) == 1
+    clock.advance_ms(30_000)  # marker lapsed with the signal lease → treated as lost
+    assert await keyed.recover(force=True) == 1
+
+
+async def test_r2_marker_cleared_on_ack_and_set_on_signal(keyed, fake_redis):
+    await keyed.push("w1", {})
+    assert await fake_redis.exists(keyed._k.sig("w1")) == 1
+    lease = await keyed.lease()
+    assert await fake_redis.exists(keyed._k.sig("w1")) == 1  # holder keeps its signal live
+    await keyed.apply(lease, Outcome.ack())
+    assert await fake_redis.exists(keyed._k.sig("w1")) == 0
+
+
+async def test_r2_crash_mid_pass_loses_nothing(fake_redis, clock, dlq):
+    """(d): nothing is persisted across passes; the next pass finishes the job."""
+    q = build(fake_redis, clock, dlq)
+    await _orphans(q, fake_redis, 50)
+    real = q._reconcile
+    calls = {"n": 0}
+
+    async def dying(key):
+        calls["n"] += 1
+        if calls["n"] == 20:
+            raise ConnectionError("pod died mid-pass")
+        return await real(key)
+
+    q._reconcile = dying
+    with pytest.raises(ConnectionError):
+        await q.recover()
+    q._reconcile = real
+    recovered_later = await q.recover(force=True)  # the next pass, nothing persisted
+    stream = fake_redis.streams[q._store.stream_for("punches-signal")]
+    keys = {json.loads(e[1]["envelope"])["payload"]["key"] for e in stream}
+    assert len(keys) == 50 and len(stream) == 50  # nothing lost, nothing duplicated
+    assert recovered_later == 31  # 19 were done before the crash

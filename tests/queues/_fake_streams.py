@@ -118,9 +118,15 @@ class FakeStreamsRedis:
     )
 
     def __init__(
-        self, clock: Optional[FakeClock] = None, decode_responses: bool = True
+        self,
+        clock: Optional[FakeClock] = None,
+        decode_responses: bool = True,
+        sscan_whole_set: bool = False,
     ) -> None:
         self.decode_responses = decode_responses
+        #: Real Redis returns small sets (intset/listpack) in ONE SSCAN call and
+        #: ``COUNT`` is only a hint: emulate that.
+        self.sscan_whole_set = sscan_whole_set
         self.clock = clock or FakeClock()
         self.streams: dict[str, list[tuple[str, dict]]] = {}
         self.groups: dict[tuple[str, str], dict[str, Any]] = {}
@@ -622,7 +628,7 @@ class FakeStreamsRedis:
         name = _s(name)
         self._check(name, "set")
         members = sorted(self.sets.get(name, set()))
-        step = int(count or 10)
+        step = len(members) + 1 if self.sscan_whole_set else int(count or 10)
         start = int(cursor)
         chunk = members[start: start + step]
         nxt = start + step

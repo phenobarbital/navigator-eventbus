@@ -126,3 +126,15 @@ async def test_default_order_is_arrival_order_on_real_redis(client):
         await queue.push("w1", {"i": i})
     heads = await queue.peek("w1", limit=n)
     assert [m.body["i"] for m in heads] == list(range(n))
+
+
+async def test_recover_sweeps_all_orphans_in_one_pass_on_real_redis(client):
+    """Real SSCAN/pipeline semantics: 1,500 orphan keys, one pass, no duplicates after."""
+    queue = make_queue(client)
+    for i in range(1_500):
+        key = f"k{i:05d}"
+        await client.zadd(queue._k.key(key), {f"m{i}": 1})
+        await client.hset(queue._k.msg(f"m{i}"), mapping={"key": key, "body": "{}"})
+        await client.sadd(queue._k.keys, key)
+    assert await queue.recover() == 1_500
+    assert await queue.recover(force=True) == 0  # live markers: nothing re-signalled

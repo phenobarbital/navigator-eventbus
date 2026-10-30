@@ -53,6 +53,14 @@ def build(fake_redis, clock, dlq=None, **cfg) -> KeyedQueue:
     )
 
 
+def lose_signals(q: KeyedQueue, fake_redis) -> None:
+    """Simulate lost wake-ups: the signal entries AND their liveness markers vanish
+    (what an eviction / a parked signal looks like once the marker TTL lapsed)."""
+    fake_redis.streams[q._store.stream_for("punches-signal")].clear()
+    for name in [n for n in fake_redis.strings if n.startswith(q._k.base + "sig:")]:
+        del fake_redis.strings[name]
+
+
 @pytest.fixture
 def keyed(fake_redis, clock, dlq) -> KeyedQueue:
     return build(fake_redis, clock, dlq)

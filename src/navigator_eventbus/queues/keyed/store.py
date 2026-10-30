@@ -38,6 +38,9 @@ __all__ = ("KeyedLease", "KeyedQueue", "backoff_ms")
 
 #: How many signals one ``lease()`` call may burn through before giving up.
 _MAX_SIGNALS_PER_LEASE = 16
+#: SSCAN COUNT hint and pipeline chunk of ``recover`` (COUNT is only a hint).
+_SCAN_COUNT = 1_000
+_PIPELINE_CHUNK = 500
 
 
 def backoff_ms(attempts: int, *, base_ms: int, max_ms: int, factor: float) -> int:
@@ -98,9 +101,10 @@ def _to_message(raw: dict[Any, Any], message_id: Optional[str] = None) -> KeyedM
 class _Keys:
     """Every Redis key name of one keyed queue (spec §2 key table).
 
-    Besides the table's keys: ``recover_cursor`` (string, SSCAN cursor of the
-    throttled ``recover`` pass) and ``lastscore`` (string, the last default
-    ``order`` handed out — read and written inside ``push``'s WATCH/MULTI).
+    Besides the table's keys: ``sig:<k>`` (string, PX = signal visibility: a
+    live wake-up for key ``k`` exists; ``recover`` skips such keys) and
+    ``lastscore`` (string, the last default ``order`` handed out — read and
+    written inside ``push``'s WATCH/MULTI).
     """
 
     def __init__(self, prefix: str, name: str) -> None:
@@ -111,8 +115,11 @@ class _Keys:
         self.all = self.base + "all"
         self.paused = self.base + "paused"
         self.recover = self.base + "recover"
-        self.recover_cursor = self.base + "recover_cursor"
         self.lastscore = self.base + "lastscore"
+
+    def sig(self, k: str) -> str:
+        """Liveness marker of key ``k``'s wake-up signal."""
+        return f"{self.base}sig:{k}"
 
     def key(self, k: str) -> str:
         """Sorted set of a key's pending message ids."""
@@ -174,6 +181,7 @@ class KeyedLease:
                 await queue._store.change_visibility(
                     cfg.signal, self.receipt, visibility
                 )
+                await queue._mark_signal(self.key)
             except Exception as exc:  # noqa: BLE001 — a hint, never fatal
                 queue.logger.debug("signal visibility extend failed: %s", exc)
 
@@ -236,14 +244,27 @@ class KeyedQueue:
             blocking=False,
         )
 
+    async def _mark_signal(self, key: str) -> None:
+        """Record that a signal for *key* is live for one signal-visibility window."""
+        await self._redis.set(
+            self._k.sig(key), "1", px=self.config.signal.default_visibility_timeout_ms
+        )
+
     async def _signal(self, key: str) -> None:
-        """Send one wake-up hint for *key*."""
+        """Send one wake-up hint for *key* (and mark it live for ``recover``)."""
         envelope = EventEnvelope(
             topic=f"keyed.{self.config.name}.signal", payload={"key": key}
         )
-        await self._store.send(self.config.signal, envelope)
+        await self._mark_signal(key)
+        try:
+            await self._store.send(self.config.signal, envelope)
+        except BaseException:
+            await self._redis.delete(self._k.sig(key))
+            raise
 
-    async def _ack_signal(self, receipt: Optional[Receipt]) -> None:
+    async def _ack_signal(
+        self, receipt: Optional[Receipt], key: Optional[str] = None
+    ) -> None:
         """Delete a signal; a stale receipt only means the pull plane reclaimed it."""
         if receipt is None:
             return
@@ -253,6 +274,8 @@ class KeyedQueue:
             self.logger.debug("signal receipt was stale (reclaimed) — ignoring")
         except Exception as exc:  # noqa: BLE001 — signals are hints
             self.logger.warning("could not delete signal: %s", exc)
+        if key is not None:
+            await self._redis.delete(self._k.sig(key))
 
     async def _release(self, lock: Lock) -> None:
         """Release a lock, tolerating one that already expired."""
@@ -526,6 +549,7 @@ class KeyedQueue:
             if not key:
                 await self._ack_signal(item.receipt)
                 continue
+            await self._mark_signal(str(key))  # (re)delivered: live for another window
             lease = await self.lease_key(str(key), receipt=item.receipt)
             if lease is not None:
                 return lease
@@ -565,7 +589,7 @@ class KeyedQueue:
         """
         lock = self._new_lock(key)
         if not await lock.acquire(blocking=False):
-            await self._ack_signal(receipt)
+            await self._ack_signal(receipt, key)
             return None, "busy"
         try:
             lease, reason = await self._lease_locked(key, lock, receipt, ignore_due)
@@ -574,7 +598,7 @@ class KeyedQueue:
             raise
         if lease is None:
             await self._release(lock)
-            await self._ack_signal(receipt)
+            await self._ack_signal(receipt, key)
         return lease, reason
 
     async def _lease_locked(
@@ -766,7 +790,7 @@ class KeyedQueue:
         await self._release(lease.lock)
         if kind != "hold":
             await self._reconcile(key)
-        await self._ack_signal(lease.receipt)
+        await self._ack_signal(lease.receipt, key)
 
     # ------------------------------------------------------------------
     # expiry
@@ -898,17 +922,21 @@ class KeyedQueue:
         return sent
 
     async def recover(self, *, force: bool = False) -> int:
-        """Re-signal keys whose wake-up may have been lost (signal rule 5).
+        """Re-signal keys whose wake-up was lost (signal rule 5).
 
         Throttled by ``SET recover NX PX recover_interval_ms`` — a rate limit,
-        not a leader. Each pass examines at most ``recover_batch`` keys (an
-        ``SSCAN`` batch; the cursor is persisted in Redis), so a full sweep of
-        a large key set takes ``ceil(keys / recover_batch)`` intervals. A key
-        is skipped when locked or held; otherwise :meth:`_reconcile` compares
-        ``delayed`` with its CURRENT head and signals it when leasable now.
+        not a leader. One pass sweeps the WHOLE key set (``SSCAN`` until the
+        cursor returns to 0; nothing is persisted across passes, so a crash
+        loses nothing and every orphan waits at most one interval). The
+        amplification is removed at the root: a key is re-signalled only when
+        it has no live signal (``sig:<k>`` marker) and is not locked; the
+        per-key checks are pipelined, and only the (rare) orphans cost more
+        round trips. A marker whose signal vanished (eviction, signal parked by
+        ``max_receives``) lapses after one signal-visibility window, so such a
+        key waits at most that window plus one interval.
 
         Args:
-            force: Skip the throttle and sweep the whole key set in one call.
+            force: Skip the throttle.
 
         Returns:
             The number of signals sent.
@@ -922,25 +950,31 @@ class KeyedQueue:
             )
             if not won:
                 return 0
-        sent = 0
-        batch = self.config.recover_batch
+        found: set[str] = set()
+        cursor = 0
         while True:
-            raw_cursor = await self._redis.get(self._k.recover_cursor)
-            cursor = int(_as_str(raw_cursor)) if raw_cursor is not None else 0
-            next_cursor, members = await self._redis.sscan(
-                self._k.keys, cursor, count=batch
+            cursor, members = await self._redis.sscan(
+                self._k.keys, cursor, count=_SCAN_COUNT
             )
-            if int(next_cursor) == 0:
-                await self._redis.delete(self._k.recover_cursor)
-            else:
-                await self._redis.set(self._k.recover_cursor, str(int(next_cursor)))
-            for raw in sorted({_as_str(m) for m in members}):
-                if await self._redis.exists(self._k.lock(raw)):
-                    continue
-                if await self._reconcile(raw):
+            found.update(_as_str(m) for m in members)
+            if int(cursor) == 0:
+                break
+        sent = 0
+        names = sorted(found)
+        for start in range(0, len(names), _PIPELINE_CHUNK):
+            chunk = names[start: start + _PIPELINE_CHUNK]
+            pipe = self._redis.pipeline(transaction=False)
+            async with pipe:
+                for name in chunk:
+                    pipe.exists(self._k.sig(name))
+                    pipe.exists(self._k.lock(name))
+                flags = await pipe.execute()
+            for i, name in enumerate(chunk):
+                if flags[2 * i] or flags[2 * i + 1]:
+                    continue  # live signal or in flight: not an orphan
+                if await self._reconcile(name):
                     sent += 1
-            if not force or int(next_cursor) == 0:
-                return sent
+        return sent
 
     async def release_hold(self, key: str) -> bool:
         """Clear a hold; the head becomes pending and the key is signalled.

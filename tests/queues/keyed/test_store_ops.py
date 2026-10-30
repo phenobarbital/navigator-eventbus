@@ -4,7 +4,7 @@ import asyncio
 
 from navigator_eventbus.queues.keyed.config import Outcome
 
-from .test_store import build, clock, dlq, fake_redis, keyed  # noqa: F401
+from .test_store import build, clock, dlq, fake_redis, keyed, lose_signals  # noqa: F401
 
 
 def stream_len(q, fake_redis) -> int:
@@ -45,7 +45,7 @@ async def test_promote_due_respects_limit(keyed, fake_redis, clock):
 async def test_recover_resignals_orphan_key(keyed, fake_redis, clock):
     await keyed.push("w1", {})
     # lose the signal
-    fake_redis.streams[keyed._store.stream_for("punches-signal")].clear()
+    lose_signals(keyed, fake_redis)
     before = stream_len(keyed, fake_redis)
     other = build(fake_redis, clock)
     results = await asyncio.gather(keyed.recover(), other.recover())
@@ -53,7 +53,9 @@ async def test_recover_resignals_orphan_key(keyed, fake_redis, clock):
     assert stream_len(keyed, fake_redis) == before + 1
     assert await keyed.recover() == 0  # still throttled
     clock.advance_ms(60_001)
-    assert await keyed.recover() == 1
+    assert await keyed.recover() == 1  # marker lapsed with the signal window
+    assert await keyed.recover(force=True) == 0  # fresh marker: live signal
+    lose_signals(keyed, fake_redis)
     assert await keyed.recover(force=True) == 1
 
 
@@ -62,7 +64,7 @@ async def test_recover_skips_locked_held_and_genuinely_delayed(keyed, fake_redis
         await keyed.push(k, {})
     lease = await keyed.lease_key("delayed")  # make "delayed"'s head genuinely not due
     await keyed.apply(lease, Outcome.retry(delay_ms=900_000))
-    fake_redis.streams[keyed._store.stream_for("punches-signal")].clear()
+    lose_signals(keyed, fake_redis)
     await fake_redis.set(keyed._k.lock("locked"), "tok", px=10_000)
     await fake_redis.hset(keyed._k.held, "held", "{}")
     assert await keyed.recover(force=True) == 1
@@ -75,7 +77,7 @@ async def test_promote_crash_between_zrem_and_send_is_recovered(keyed, fake_redi
     lease = await keyed.lease()
     await keyed.apply(lease, Outcome.retry(delay_ms=1_000))
     clock.advance_ms(1_001)
-    fake_redis.streams[keyed._store.stream_for("punches-signal")].clear()
+    lose_signals(keyed, fake_redis)
     await fake_redis.zrem(keyed._k.delayed, "w1")  # ZREM done, send never happened
     assert await keyed.lease() is None  # nothing signals the key
     assert await keyed.recover(force=True) == 1

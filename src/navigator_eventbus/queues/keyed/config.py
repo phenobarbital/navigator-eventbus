@@ -30,7 +30,6 @@ class KeyedQueueConfig(BaseModel):
     pause_default_ttl_ms: int = Field(default=60_000, gt=0)
     pause_poll_ms: int = Field(default=1_000, gt=0)
     recover_interval_ms: int = Field(default=60_000, gt=0)
-    recover_batch: int = Field(default=500, gt=0)  # keys examined per recover() pass (SSCAN)
     wait_safety_ms: Optional[int] = Field(default=None, gt=0)
     prefix: str = "evq:keyed:"
 

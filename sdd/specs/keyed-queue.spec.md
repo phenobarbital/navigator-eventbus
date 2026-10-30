@@ -120,7 +120,7 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
 | `all` | zset | member = `message_id`, score = `created_ms` (oldest-age metric, `max_age` scan) |
 | `paused` | string | reason; `PX` = pause TTL |
 | `recover` | string | `SET NX PX recover_interval_ms` throttle token for `recover()` — a rate limit, not a leader: whoever wins runs one pass, nobody owns anything |
-| `recover_cursor` | string | SSCAN cursor of the throttled `recover()` sweep (≤ `recover_batch` keys per pass); absent when a sweep completed |
+| `sig:<k>` | string | liveness marker of key `k`'s wake-up signal (`SET PX` = signal visibility); set when a signal is sent, delivered or extended, deleted when acked. `recover()` re-signals only keys with no marker and no lock |
 | `lastscore` | string | last default `order` handed out (read + written inside `push`'s WATCH/MULTI): default `order` = `max(now_ms, last + 2^-10)` — strictly increasing for any burst, exact in a double (multiples of 2^-10, epoch-ms < 2^43) |
 
 **Signal lifetime rules (v0.2, load-bearing for liveness).**
@@ -137,7 +137,9 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
    `ge=1`, default 5 — `queues/config.py:120`) is never consumed by a pause.
 5. Signals stay hints. `recover()` is the backstop that makes a lost signal (consumer crash
    between `ZREM delayed` and `send`, a signal parked by `max_receives`, Redis eviction)
-   cost at most one `recover_interval_ms`.
+   cost at most one `recover_interval_ms` (plus, when only the `sig:<k>` marker outlived the
+   signal, one signal-visibility window). One pass sweeps the whole key set; nothing is
+   persisted across passes.
 
 ### Component Diagram
 
