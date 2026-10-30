@@ -7,6 +7,7 @@ own: every atomic step is a single command, a ``Lock`` call, or a
 ``WATCH``/``MULTI``/``EXEC`` transaction.
 """
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -49,7 +50,15 @@ def backoff_ms(attempts: int, *, base_ms: int, max_ms: int, factor: float) -> in
     Returns:
         The delay in milliseconds.
     """
-    return int(min(max_ms, base_ms * (factor ** max(0, attempts))))
+    if base_ms >= max_ms:
+        return int(max_ms)
+    if attempts <= 0 or factor <= 1.0:
+        return int(base_ms)
+    # Steps after which base * factor**n reaches the cap; clamping the exponent
+    # keeps ``factor ** attempts`` from overflowing for huge attempt counts.
+    if attempts >= math.log(max_ms / base_ms) / math.log(factor):
+        return int(max_ms)
+    return int(min(max_ms, base_ms * (factor**attempts)))
 
 
 def _as_str(value: Any) -> str:
@@ -134,17 +143,24 @@ class KeyedLease:
         """Extend the lock and the signal visibility together.
 
         Args:
-            additional_ms: New TTL of the lock (replaces the remaining TTL).
-                Defaults to ``lock_ttl_ms``.
+            additional_ms: New TTL of the lock (replaces the remaining TTL), in
+                ``(0, lock_ttl_ms]``. Defaults to ``lock_ttl_ms``.
 
         Raises:
             LeaseLost: The lock expired or changed owner.
+            ValueError: ``additional_ms`` outside ``(0, lock_ttl_ms]``.
         """
         queue = self._queue
         if queue is None:
             raise LeaseLost("lease is not bound to a queue")
         cfg = queue.config
-        ms = additional_ms or cfg.lock_ttl_ms
+        ms = cfg.lock_ttl_ms if additional_ms is None else additional_ms
+        if ms <= 0 or ms > cfg.lock_ttl_ms:
+            # Signal rule 2: the signal lease (default visibility) only
+            # outlives a lock of at most lock_ttl_ms.
+            raise ValueError(
+                f"additional_ms must be in (0, lock_ttl_ms={cfg.lock_ttl_ms}], got {ms}"
+            )
         try:
             await self.lock.extend(ms / 1000.0, replace_ttl=True)
         except (LockNotOwnedError, LockError) as exc:
@@ -998,8 +1014,8 @@ class KeyedQueue:
         include_held: bool = False,
         ignore_pause: bool = False,
     ) -> Any:
-        """Direct administrative flush; see :func:`navigator_eventbus.queues.keyed.drain.drain`."""
-        from navigator_eventbus.queues.keyed.drain import drain as _drain
+        """Direct administrative flush; see :func:`navigator_eventbus.queues.keyed.drainer.drain`."""
+        from navigator_eventbus.queues.keyed.drainer import drain as _drain
 
         return await _drain(
             self,

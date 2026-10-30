@@ -56,6 +56,20 @@ class _Encoder:
         return str(value).encode()
 
 
+def _encode(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.encode()
+    if isinstance(value, dict):
+        return {_encode(k): _encode(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_encode(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_encode(v) for v in value)
+    if isinstance(value, set):
+        return {_encode(v) for v in value}
+    return value
+
+
 def _s(value: Any) -> str:
     """Normalise a command argument to ``str`` (``decode_responses=True``)."""
     if isinstance(value, bytes):
@@ -97,7 +111,16 @@ def _id_key(message_id: str) -> tuple[int, int]:
 class FakeStreamsRedis:
     """Minimal Redis Streams semantics, enough to drive ``QueueStore``."""
 
-    def __init__(self, clock: Optional[FakeClock] = None) -> None:
+    #: Commands whose replies carry key/member/value text (the stream commands
+    #: are left as ``str`` in bytes mode: ``QueueStore`` is not under test there).
+    _BYTES_REPLY = frozenset(
+        {"get", "hget", "hgetall", "smembers", "zrange", "zrangebyscore", "sscan"}
+    )
+
+    def __init__(
+        self, clock: Optional[FakeClock] = None, decode_responses: bool = True
+    ) -> None:
+        self.decode_responses = decode_responses
         self.clock = clock or FakeClock()
         self.streams: dict[str, list[tuple[str, dict]]] = {}
         self.groups: dict[tuple[str, str], dict[str, Any]] = {}
@@ -114,12 +137,18 @@ class FakeStreamsRedis:
             "_Pool",
             (),
             {
-                "connection_kwargs": {"decode_responses": True},
+                "connection_kwargs": {"decode_responses": decode_responses},
                 "get_encoder": staticmethod(lambda: _Encoder()),
             },
         )()
 
     # -- helpers -------------------------------------------------------
+
+    def _out(self, command: str, value: Any) -> Any:
+        """Encode a reply as ``bytes`` when emulating ``decode_responses=False``."""
+        if self.decode_responses or command not in self._BYTES_REPLY:
+            return value
+        return _encode(value)
 
     def _record(self, name: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append((name, args, kwargs))
@@ -761,7 +790,11 @@ class _FakePipeline:
             results: list = []
             for name, args, kwargs in self._queue:
                 try:
-                    results.append(await _raw(self._redis, name)(*args, **kwargs))
+                    results.append(
+                        self._redis._out(
+                            name, await _raw(self._redis, name)(*args, **kwargs)
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001 — returned in place
                     results.append(exc)
             for result in results:
@@ -828,7 +861,7 @@ def _yielding(fn):
     @functools.wraps(fn)
     async def wrapper(self, *args, **kwargs):
         await asyncio.sleep(0)  # a network round trip is an await point
-        return await fn(self, *args, **kwargs)
+        return self._out(fn.__name__, await fn(self, *args, **kwargs))
 
     return wrapper
 

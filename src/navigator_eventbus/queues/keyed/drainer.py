@@ -166,13 +166,20 @@ async def drain_key(
                 if reason == "busy":
                     counters.busy += 1
                 return
-            outcome = await _run_handler(queue, handler, lease, call_timeout_ms)
             try:
+                outcome = await _run_handler(queue, handler, lease, call_timeout_ms)
                 await queue.apply(lease, outcome)
+            except asyncio.CancelledError:
+                # Never leave the key locked for lock_ttl_ms on cancellation.
+                await asyncio.shield(queue._release(lease.lock))
+                raise
             except LeaseLost:
                 _logger.warning("drain: lease on key %r lost before apply", key)
                 counters.busy += 1
                 return
+            except Exception:
+                await queue._release(lease.lock)  # no-op when apply already released it
+                raise
             if outcome.kind == "ack":
                 counters.acked += 1
                 if state is not None:

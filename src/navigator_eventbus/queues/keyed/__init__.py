@@ -16,7 +16,7 @@ from navigator_eventbus.queues.keyed.config import (
 
 if TYPE_CHECKING:  # pragma: no cover
     from navigator_eventbus.queues.keyed.consumer import KeyedConsumer
-    from navigator_eventbus.queues.keyed.drain import drain
+    from navigator_eventbus.queues.keyed.drainer import drain
     from navigator_eventbus.queues.keyed.store import KeyedLease, KeyedQueue, backoff_ms
 
 _LAZY_MAP = {
@@ -24,7 +24,7 @@ _LAZY_MAP = {
     "KeyedLease": "navigator_eventbus.queues.keyed.store",
     "KeyedQueue": "navigator_eventbus.queues.keyed.store",
     "backoff_ms": "navigator_eventbus.queues.keyed.store",
-    "drain": "navigator_eventbus.queues.keyed.drain",
+    "drain": "navigator_eventbus.queues.keyed.drainer",
 }
 
 __all__ = (

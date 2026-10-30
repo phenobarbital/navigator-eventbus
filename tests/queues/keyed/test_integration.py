@@ -115,3 +115,14 @@ async def test_rebuild_after_flushdb(client):
         await queue.push(key, {"id": mid}, message_id=mid, order=order)  # idempotent
     assert await state() == before
     assert (await queue.describe())["messages"] == 10
+
+
+async def test_default_order_is_arrival_order_on_real_redis(client):
+    """5000 back-to-back pushes without `order`: the old `seq % 1000` tiebreak
+    put push #3999 before #3998."""
+    queue = make_queue(client)
+    n = 5_000
+    for i in range(n):
+        await queue.push("w1", {"i": i})
+    heads = await queue.peek("w1", limit=n)
+    assert [m.body["i"] for m in heads] == list(range(n))

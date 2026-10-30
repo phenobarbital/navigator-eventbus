@@ -120,6 +120,8 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
 | `all` | zset | member = `message_id`, score = `created_ms` (oldest-age metric, `max_age` scan) |
 | `paused` | string | reason; `PX` = pause TTL |
 | `recover` | string | `SET NX PX recover_interval_ms` throttle token for `recover()` — a rate limit, not a leader: whoever wins runs one pass, nobody owns anything |
+| `recover_cursor` | string | SSCAN cursor of the throttled `recover()` sweep (≤ `recover_batch` keys per pass); absent when a sweep completed |
+| `seq:<ms>` | hash | `n` = pushes seen in that millisecond (TTL 5 s); default `order` = `now_ms + (n-1)/1024`, exact in a double and arrival-ordered up to 1024 pushes/ms |
 
 **Signal lifetime rules (v0.2, load-bearing for liveness).**
 1. The consumer that wins the per-key lock **keeps its signal un-acked** until `apply()`
@@ -353,7 +355,7 @@ class KeyedConsumer:
   ```
 
 ### Module 4: drain
-- **Path**: `src/navigator_eventbus/queues/keyed/drain.py`
+- **Path**: `src/navigator_eventbus/queues/keyed/drainer.py` (renamed from `drain.py`: a submodule named like the exported function shadowed it)
 - **Responsibility**: the administrative flush — direct, concurrent across keys, sequential per key, same lock, fail-fast.
 - **Depends on**: M1, M2.
 - **Interface Skeleton**:
@@ -533,7 +535,7 @@ Verified against: `279b0d8` (origin/main at spec time; ledger commit `c9c064e` o
 | `src/navigator_eventbus/queues/keyed/config.py` | CREATE | — | — | — |
 | `src/navigator_eventbus/queues/keyed/store.py` | CREATE | — | — | — |
 | `src/navigator_eventbus/queues/keyed/consumer.py` | CREATE | — | — | — |
-| `src/navigator_eventbus/queues/keyed/drain.py` | CREATE | — | — | — |
+| `src/navigator_eventbus/queues/keyed/drainer.py` (renamed from `drain.py`: a submodule named like the exported function shadowed it) | CREATE | — | — | — |
 | `src/navigator_eventbus/queues/__init__.py` | MODIFY | `_LAZY_MAP = {` | `queues/__init__.py:49` | 1 |
 | `tests/queues/_fake_streams.py` | MODIFY | `class FakeStreamsRedis:` | `_fake_streams.py:64` | 1 |
 | `tests/queues/keyed/test_store.py` · `test_consumer.py` · `test_drain.py` · `test_exports.py` | CREATE | — | — | — |

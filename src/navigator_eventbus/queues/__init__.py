@@ -52,7 +52,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from navigator_eventbus.queues.api import QueueAPI
     from navigator_eventbus.queues.feeder import QueueFeeder
     from navigator_eventbus.queues.keyed.consumer import KeyedConsumer
-    from navigator_eventbus.queues.keyed.drain import drain
+    from navigator_eventbus.queues.keyed.drainer import drain
     from navigator_eventbus.queues.keyed.store import KeyedLease, KeyedQueue
     from navigator_eventbus.queues.store import QueueStore
 
@@ -60,7 +60,7 @@ _LAZY_MAP = {
     "KeyedConsumer": "navigator_eventbus.queues.keyed.consumer",
     "KeyedLease": "navigator_eventbus.queues.keyed.store",
     "KeyedQueue": "navigator_eventbus.queues.keyed.store",
-    "drain": "navigator_eventbus.queues.keyed.drain",
+    "drain": "navigator_eventbus.queues.keyed.drainer",
     "QueueAPI": "navigator_eventbus.queues.api",
     "QueueFeeder": "navigator_eventbus.queues.feeder",
     "QueueStore": "navigator_eventbus.queues.store",

@@ -186,3 +186,119 @@ async def test_recover_is_bounded_per_pass(fake_redis, clock, dlq):
         clock.advance_ms(60_001)
     assert max(sent) <= 500 and sum(sent) == 1_200  # cursor persisted: full coverage in 3 passes
     assert await q.recover(force=True) == 1_200  # force = one full pass
+
+
+# ---------------------------------------------------------------------------
+# Group 3 — robustness
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def bytes_redis(clock):
+    from .._fake_streams import FakeStreamsRedis
+
+    return FakeStreamsRedis(clock, decode_responses=False)
+
+
+async def test_bytes_mode_client_full_flow(bytes_redis, clock, dlq):
+    """decode_responses=False: replies are bytes; every reader must normalise."""
+    assert isinstance(await bytes_redis.hgetall("nothing"), dict)
+    q = build(bytes_redis, clock, dlq)
+    await q.push("w1", {"n": 1}, order=1)
+    await q.push("w1", {"n": 2}, order=2)
+    assert await bytes_redis.hset("probe", "a", "1") == 1
+    assert isinstance(await bytes_redis.hget("probe", "a"), bytes)
+    lease = await q.lease()
+    assert lease is not None and lease.message.body == {"n": 1}
+    await q.apply(lease, Outcome.retry(delay_ms=1_000))
+    clock.advance_ms(1_001)
+    assert await q.promote_due() == 1
+    lease = await q.lease()
+    await q.apply(lease, Outcome.hold("operator"))
+    assert await q.release_hold("w1") is True
+    assert [m.body["n"] for m in await q.peek("w1")] == [1, 2]
+    assert (await q.describe())["messages"] == 2
+    assert await q.keys() == ["w1"]
+    assert await q.recover(force=True) >= 0
+
+    async def handler(msg):
+        return Outcome.ack()
+
+    report = await q.drain(handler)
+    assert report.acked == 2 and report.busy == 0
+    assert (await q.describe())["messages"] == 0
+
+
+def test_backoff_never_overflows():
+    from navigator_eventbus.queues.keyed.store import backoff_ms
+
+    for attempts in (10, 1_023, 1_024, 10_000, 10**9):
+        assert backoff_ms(attempts, base_ms=30_000, max_ms=900_000, factor=2.0) == 900_000
+    assert backoff_ms(10_000, base_ms=30_000, max_ms=900_000, factor=1.0) == 30_000
+    assert backoff_ms(3, base_ms=30_000, max_ms=900_000, factor=2.0) == 240_000
+    assert backoff_ms(5, base_ms=1_000_000, max_ms=900_000, factor=2.0) == 900_000
+
+
+async def test_drain_key_releases_lock_on_cancel(keyed, fake_redis):
+    from navigator_eventbus.queues.keyed.drainer import drain_key  # noqa: F401
+
+    await keyed.push("w1", {})
+    started = asyncio.Event()
+
+    async def hang(msg):
+        started.set()
+        await asyncio.sleep(60)
+
+    task = asyncio.create_task(keyed.drain(hang))
+    await started.wait()
+    assert await fake_redis.exists(keyed._k.lock("w1")) == 1
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await fake_redis.exists(keyed._k.lock("w1")) == 0
+
+
+async def test_drain_key_releases_lock_when_apply_raises(keyed, fake_redis):
+    await keyed.push("w1", {})
+
+    async def handler(msg):
+        return Outcome.ack()
+
+    async def broken_apply(lease, outcome):
+        raise ConnectionError("redis went away")
+
+    keyed.apply = broken_apply
+    with pytest.raises(ConnectionError):
+        await keyed.drain(handler)
+    assert await fake_redis.exists(keyed._k.lock("w1")) == 0
+
+
+async def test_extend_rejects_more_than_lock_ttl(keyed, fake_redis):
+    await keyed.push("w1", {})
+    lease = await keyed.lease()
+    with pytest.raises(ValueError):
+        await lease.extend(additional_ms=keyed.config.lock_ttl_ms + 1)
+    with pytest.raises(ValueError):
+        await lease.extend(additional_ms=-5)
+    await lease.extend(additional_ms=5_000)
+    # rule 2: the signal lease must outlive the lock's remaining TTL
+    stream = keyed._store.stream_for("punches-signal")
+    entry = next(iter(fake_redis.groups[(stream, "workers")]["pending"].values()))
+    remaining_signal = 20_000 - fake_redis._idle_ms(entry)
+    assert remaining_signal > await fake_redis.pttl(keyed._k.lock("w1"))
+    await keyed.apply(lease, Outcome.ack())
+
+
+def test_drain_export_is_the_function_not_the_submodule():
+    import subprocess
+    import sys
+
+    code = (
+        "import navigator_eventbus.queues.keyed.drainer\n"
+        "from navigator_eventbus.queues.keyed import drain\n"
+        "import navigator_eventbus.queues as q\n"
+        "assert callable(drain) and not hasattr(drain, '__path__') and drain.__name__ == 'drain', drain\n"
+        "assert callable(q.drain) and q.drain is drain\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
