@@ -292,6 +292,43 @@ class KeyedQueue:
                 continue  # a concurrent push added a member and signals itself
         return False
 
+    async def _verify_fence(
+        self,
+        pipe: Any,
+        lock: Lock,
+        key: str,
+        message_id: str,
+        *,
+        gen: Optional[int] = None,
+        created_ms: Optional[int] = None,
+    ) -> KeyedMessage:
+        """``WATCH`` lock + message, then check token, generation and identity.
+
+        Every state change made on behalf of a lock holder goes through this,
+        so a holder whose lock lapsed can never write over a newer owner's
+        state. The caller then issues ``pipe.multi()`` / commands / ``execute()``;
+        a ``WatchError`` at ``EXEC`` must be mapped to :class:`LeaseLost`.
+
+        Raises:
+            LeaseLost: token, generation or ``created_ms`` do not match.
+        """
+        lock_name = self._k.lock(key)
+        msg_name = self._k.msg(message_id)
+        await pipe.watch(lock_name, msg_name)
+        token = getattr(lock.local, "token", None)
+        stored = await pipe.get(lock_name)
+        if token is None or stored is None or _as_str(stored) != _as_str(token):
+            raise LeaseLost(f"lock for key {key!r} no longer owned")
+        raw = await pipe.hgetall(msg_name)
+        if not raw:
+            raise LeaseLost(f"message {message_id!r} no longer exists")
+        current = _to_message(raw, message_id)
+        if gen is not None and current.gen != gen:
+            raise LeaseLost(f"message {message_id!r} generation changed")
+        if created_ms is not None and current.created_ms != created_ms:
+            raise LeaseLost(f"message {message_id!r} was recreated")
+        return current
+
     # ------------------------------------------------------------------
     # push
     # ------------------------------------------------------------------
@@ -479,8 +516,15 @@ class KeyedQueue:
                 continue
             message = _to_message(raw, mid)
             now = self.now_ms()
-            if await self.expire_head(key, message):
-                continue
+            try:
+                if await self.expire_head(key, message, lock=lock):
+                    continue
+            except LeaseLost as exc:
+                self.logger.warning(
+                    "keyed queue %s: lost key %r while expiring (%s)",
+                    self.config.name, key, exc,
+                )
+                return None, "busy"
             if await self._redis.hget(self._k.held, key) is not None:
                 return None, "held"
             deadline = 0
@@ -491,14 +535,34 @@ class KeyedQueue:
             if deadline:
                 await self._redis.zadd(self._k.delayed, {key: float(deadline)})
                 return None, "waiting"
-            gen = await self._redis.hincrby(self._k.msg(mid), "gen", 1)
-            await self._redis.hset(
-                self._k.msg(mid),
-                mapping={"state": "leased", "wait_until_ms": "", "due_ms": ""},
-            )
+            try:
+                pipe = self._redis.pipeline(transaction=True)
+                async with pipe:
+                    await self._verify_fence(
+                        pipe, lock, key, mid,
+                        gen=message.gen, created_ms=message.created_ms,
+                    )
+                    pipe.multi()
+                    pipe.hset(
+                        self._k.msg(mid),
+                        mapping={
+                            "gen": str(message.gen + 1),
+                            "state": "leased",
+                            "wait_until_ms": "",
+                            "due_ms": "",
+                        },
+                    )
+                    await pipe.execute()
+            except (LeaseLost, WatchError) as exc:
+                self.logger.warning(
+                    "keyed queue %s: lost key %r while leasing (%s)",
+                    self.config.name, key, exc,
+                )
+                return None, "busy"
+            gen = message.gen + 1
             message = message.model_copy(
                 update={
-                    "gen": int(gen),
+                    "gen": gen,
                     "state": "leased",
                     "wait_until_ms": None,
                     "due_ms": None,
@@ -506,7 +570,7 @@ class KeyedQueue:
             )
             return (
                 KeyedLease(
-                    key=key, message=message, lock=lock, gen=int(gen),
+                    key=key, message=message, lock=lock, gen=gen,
                     receipt=receipt, _queue=self,
                 ),
                 "leased",
@@ -529,21 +593,14 @@ class KeyedQueue:
         """
         key = lease.key
         mid = lease.message.message_id
-        lock_name = self._k.lock(key)
         msg_name = self._k.msg(mid)
-        token = getattr(lease.lock.local, "token", None)
         dlq: Optional[tuple[KeyedMessage, str]] = None
         pipe = self._redis.pipeline(transaction=True)
         try:
             async with pipe:
-                await pipe.watch(lock_name, msg_name)
-                stored = await pipe.get(lock_name)
-                if token is None or stored is None or _as_str(stored) != _as_str(token):
-                    raise LeaseLost(f"lock for key {key!r} no longer owned")
-                raw = await pipe.hgetall(msg_name)
-                if not raw or int(float(_as_str(raw.get("gen", "0")))) != lease.gen:
-                    raise LeaseLost(f"message {mid!r} generation changed")
-                current = _to_message(raw, mid)
+                current = await self._verify_fence(
+                    pipe, lease.lock, key, mid, gen=lease.gen
+                )
                 now = self.now_ms()
                 kind = outcome.kind
                 attempts = current.attempts
@@ -636,14 +693,26 @@ class KeyedQueue:
     # expiry
     # ------------------------------------------------------------------
 
-    async def expire_head(self, key: str, message: KeyedMessage) -> bool:
+    async def expire_head(
+        self, key: str, message: KeyedMessage, *, lock: Optional[Lock] = None
+    ) -> bool:
         """Expire *message* when ``created_ms + max_age_ms < now``.
 
         Logs ``"expiring"``, awaits ``on_dlq`` and removes the message in one
-        ``MULTI``. The caller must hold the key's lock.
+        ``MULTI``, fenced exactly like :meth:`apply` (lock token, generation
+        and ``created_ms`` re-checked under ``WATCH``): a holder whose lock
+        lapsed while ``on_dlq`` was slow can never delete a newer message.
+
+        Args:
+            key: The ordering key.
+            message: The snapshot of the head being examined.
+            lock: The caller's per-key lock. ``None`` acquires (and releases) one.
 
         Returns:
             ``True`` when the message was expired and removed.
+
+        Raises:
+            LeaseLost: The lock/message changed while expiring; nothing removed.
         """
         max_age = self.config.max_age_ms
         if max_age is None:
@@ -651,29 +720,47 @@ class KeyedQueue:
         now = self.now_ms()
         if message.created_ms + max_age >= now:
             return False
-        self.logger.warning(
-            "keyed queue %s: expiring message %s of key %r (age %d ms > max_age_ms %d)",
-            self.config.name,
-            message.message_id,
-            key,
-            now - message.created_ms,
-            max_age,
-        )
-        await self._handoff_dlq(message, "expired: max_age_ms exceeded")
-        held_raw = await self._redis.hget(self._k.held, key)
-        pipe = self._redis.pipeline(transaction=True)
-        async with pipe:
-            pipe.zrem(self._k.key(key), message.message_id)
-            pipe.delete(self._k.msg(message.message_id))
-            pipe.zrem(self._k.all, message.message_id)
-            if held_raw is not None:
-                try:
-                    held_id = json.loads(_as_str(held_raw)).get("message_id")
-                except ValueError:
-                    held_id = None
-                if held_id == message.message_id:
-                    pipe.hdel(self._k.held, key)
-            await pipe.execute()
+        own: Optional[Lock] = None
+        if lock is None:
+            own = self._new_lock(key)
+            if not await own.acquire(blocking=False):
+                return False
+            lock = own
+        try:
+            self.logger.warning(
+                "keyed queue %s: expiring message %s of key %r (age %d ms > max_age_ms %d)",
+                self.config.name,
+                message.message_id,
+                key,
+                now - message.created_ms,
+                max_age,
+            )
+            pipe = self._redis.pipeline(transaction=True)
+            try:
+                async with pipe:
+                    await self._verify_fence(
+                        pipe, lock, key, message.message_id,
+                        gen=message.gen, created_ms=message.created_ms,
+                    )
+                    await self._handoff_dlq(message, "expired: max_age_ms exceeded")
+                    held_raw = await pipe.hget(self._k.held, key)
+                    pipe.multi()
+                    pipe.zrem(self._k.key(key), message.message_id)
+                    pipe.delete(self._k.msg(message.message_id))
+                    pipe.zrem(self._k.all, message.message_id)
+                    if held_raw is not None:
+                        try:
+                            held_id = json.loads(_as_str(held_raw)).get("message_id")
+                        except ValueError:
+                            held_id = None
+                        if held_id == message.message_id:
+                            pipe.hdel(self._k.held, key)
+                    await pipe.execute()
+            except WatchError as exc:
+                raise LeaseLost(f"key {key!r} changed while expiring") from exc
+        finally:
+            if own is not None:
+                await self._release(own)
         self.expired_count += 1
         return True
 
