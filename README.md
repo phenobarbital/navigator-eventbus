@@ -208,8 +208,10 @@ report = await queue.drain(handler, key_prefix="tenant-a:")   # administrative f
 How it stays live: a wake-up *signal* (a normal pull queue) is only a hint; the per-key sorted
 set is the order and the per-key lock the exclusion. The signal lease outlives the lock
 (`signal.default_visibility_timeout_ms > lock_ttl_ms`), consumers never `receive()` while
-paused, and `recover()` re-signals keys whose hint was lost, so a crash or lost signal costs at
-most `max(lock_ttl_ms, recover_interval_ms)`.
+paused, and `recover()` re-signals keys whose hint was lost. A crashed holder delays its key at
+most `lock_ttl_ms`; with no backlog a lost signal is recovered within *signal visibility +
+`recover_interval_ms`*, and while the signal group has undelivered entries (or the queue is
+paused) `recover()` waits for the backlog to drain instead of amplifying it.
 
 Caveats:
 - `push` is idempotent by `message_id`, but after an `ack` the message is gone: re-pushing the

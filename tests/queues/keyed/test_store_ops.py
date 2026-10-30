@@ -53,8 +53,7 @@ async def test_recover_resignals_orphan_key(keyed, fake_redis, clock):
     assert stream_len(keyed, fake_redis) == before + 1
     assert await keyed.recover() == 0  # still throttled
     clock.advance_ms(60_001)
-    assert await keyed.recover() == 1  # marker lapsed with the signal window
-    assert await keyed.recover(force=True) == 0  # fresh marker: live signal
+    assert await keyed.recover() == 0  # its own signal is queued: backlog, nothing amplified
     lose_signals(keyed, fake_redis)
     assert await keyed.recover(force=True) == 1
 

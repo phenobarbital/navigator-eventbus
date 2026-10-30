@@ -138,3 +138,21 @@ async def test_recover_sweeps_all_orphans_in_one_pass_on_real_redis(client):
         await client.sadd(queue._k.keys, key)
     assert await queue.recover() == 1_500
     assert await queue.recover(force=True) == 0  # live markers: nothing re-signalled
+
+
+async def test_backlog_detection_and_per_signal_markers_on_real_redis(client):
+    """Real XINFO GROUPS lag / XRANGE / ZREM semantics behind R3-1..R3-3."""
+    queue = make_queue(client)
+    assert await queue._has_backlog() is False  # no stream yet
+    await queue.push("a", {})
+    await queue.push("b", {})
+    assert await queue._has_backlog() is True  # undelivered signals (group not created yet)
+    assert await queue.recover(force=True) == 0  # quiet during backlog
+    for _ in range(2):
+        lease = await queue.lease()
+        assert lease is not None
+        live = await client.zrange(queue._k.sig(lease.key), 0, -1)
+        assert lease.receipt.message_id in live
+        await queue.apply(lease, Outcome.ack())
+        assert lease.receipt.message_id not in await client.zrange(queue._k.sig(lease.key), 0, -1)
+    assert await queue._has_backlog() is False

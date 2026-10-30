@@ -193,6 +193,26 @@ class FakeStreamsRedis:
         self.streams[name] = [e for e in entries if e[0] not in targets]
         return len(entries) - len(self.streams[name])
 
+    async def xrange(self, name, min="-", max="+", count=None):
+        """``min``/``max`` accept ``-``/``+`` and the exclusive ``(id`` form."""
+        self._check(name, "stream")
+
+        def _bound_id(raw, default):
+            if raw in ("-", "+"):
+                return default, False
+            text = _s(raw)
+            exclusive = text.startswith("(")
+            return _id_key(text[1:] if exclusive else text), exclusive
+
+        lo, lo_x = _bound_id(min, (0, 0))
+        hi, hi_x = _bound_id(max, (float("inf"), 0))
+        out = []
+        for message_id, fields in self.streams.get(name, []):
+            key = _id_key(message_id)
+            if (key > lo if lo_x else key >= lo) and (key < hi if hi_x else key <= hi):
+                out.append((message_id, dict(fields)))
+        return out[:count] if count else out
+
     async def xtrim(self, name, maxlen=None, approximate=True, minid=None):
         self._check(name, "stream")
         self._record("xtrim", name, maxlen=maxlen, minid=minid)
@@ -713,6 +733,25 @@ class FakeStreamsRedis:
             self._bump(name)
         self._cleanup(name)
         return removed
+
+    async def zremrangebyscore(self, name, min, max):
+        self._record("zremrangebyscore", name, min, max)
+        name = _s(name)
+        self._check(name, "zset")
+        lo, lo_x = _bound(min, float("-inf"))
+        hi, hi_x = _bound(max, float("inf"))
+        data = self.zsets.get(name, {})
+        doomed = [
+            m
+            for m, sc in data.items()
+            if (sc > lo if lo_x else sc >= lo) and (sc < hi if hi_x else sc <= hi)
+        ]
+        for member in doomed:
+            del data[member]
+        if doomed:
+            self._bump(name)
+        self._cleanup(name)
+        return len(doomed)
 
     async def zcard(self, name):
         self._record("zcard", name)

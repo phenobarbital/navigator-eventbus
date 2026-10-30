@@ -16,7 +16,7 @@ FEAT-713 — KeyedQueue. (The release number is chosen at release time; 0.5.0 is
   `WATCH`/`MULTI`), atomic idempotent `push(message_id=...)`.
 - Head-blocking outcomes: `ack`, `retry(delay)`, `wait(until)` (always with a safety deadline),
   `hold(reason)` + `release_hold`.
-- Leaderless operations: `promote_due`, `recover` (throttled re-signal of lost wake-ups),
+- Leaderless operations: `promote_due`, `recover` (throttled re-signal of lost wake-ups: full sweep per pass, per-signal liveness markers, quiet during backlog/pause; bound = signal visibility + `recover_interval_ms`),
   `pause(ttl)` / `resume`, `max_age_ms` expiry and `max_attempts` handed to `on_dlq`.
 - `drain(handler, key_prefix=...)`: direct administrative flush — concurrent across keys,
   sequential inside a key, same lock as the consumers, fail-fast.

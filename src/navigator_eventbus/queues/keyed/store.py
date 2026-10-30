@@ -101,8 +101,10 @@ def _to_message(raw: dict[Any, Any], message_id: Optional[str] = None) -> KeyedM
 class _Keys:
     """Every Redis key name of one keyed queue (spec §2 key table).
 
-    Besides the table's keys: ``sig:<k>`` (string, PX = signal visibility: a
-    live wake-up for key ``k`` exists; ``recover`` skips such keys) and
+    Besides the table's keys: ``sig:<k>`` (zset: member = stream entry id of a
+    delivered/sent signal for key ``k``, score = its liveness deadline in ms; a
+    key may have several live signals, each acked entry removes only its own id;
+    ``recover`` skips keys with a live member) and
     ``lastscore`` (string, the last default ``order`` handed out — read and
     written inside ``push``'s WATCH/MULTI).
     """
@@ -181,7 +183,17 @@ class KeyedLease:
                 await queue._store.change_visibility(
                     cfg.signal, self.receipt, visibility
                 )
-                await queue._mark_signal(self.key)
+                # Refresh the marker only if the claim really found the signal
+                # still pending (an acked/parked entry must not look live).
+                pending = await queue._redis.xpending_range(
+                    name=self.receipt.stream,
+                    groupname=self.receipt.group,
+                    min=self.receipt.message_id,
+                    max=self.receipt.message_id,
+                    count=1,
+                )
+                if pending:
+                    await queue._mark_signal(self.key, self.receipt.message_id)
             except Exception as exc:  # noqa: BLE001 — a hint, never fatal
                 queue.logger.debug("signal visibility extend failed: %s", exc)
 
@@ -244,28 +256,28 @@ class KeyedQueue:
             blocking=False,
         )
 
-    async def _mark_signal(self, key: str) -> None:
-        """Record that a signal for *key* is live for one signal-visibility window."""
-        await self._redis.set(
-            self._k.sig(key), "1", px=self.config.signal.default_visibility_timeout_ms
-        )
+    async def _mark_signal(self, key: str, entry_id: str) -> None:
+        """Record signal *entry_id* of *key* as live for one visibility window."""
+        window = self.config.signal.default_visibility_timeout_ms
+        await self._redis.zadd(self._k.sig(key), {entry_id: float(self.now_ms() + window)})
+        await self._redis.pexpire(self._k.sig(key), window * 2)  # key-level cleanup only
 
     async def _signal(self, key: str) -> None:
         """Send one wake-up hint for *key* (and mark it live for ``recover``)."""
         envelope = EventEnvelope(
             topic=f"keyed.{self.config.name}.signal", payload={"key": key}
         )
-        await self._mark_signal(key)
-        try:
-            await self._store.send(self.config.signal, envelope)
-        except BaseException:
-            await self._redis.delete(self._k.sig(key))
-            raise
+        entry_id = await self._store.send(self.config.signal, envelope)
+        await self._mark_signal(key, entry_id)
 
     async def _ack_signal(
         self, receipt: Optional[Receipt], key: Optional[str] = None
     ) -> None:
-        """Delete a signal; a stale receipt only means the pull plane reclaimed it."""
+        """Delete a signal; a stale receipt only means the pull plane reclaimed it.
+
+        Only THIS entry's marker member is removed (``ZREM`` is atomic per
+        member): another live signal of the same key keeps its own.
+        """
         if receipt is None:
             return
         try:
@@ -275,7 +287,33 @@ class KeyedQueue:
         except Exception as exc:  # noqa: BLE001 — signals are hints
             self.logger.warning("could not delete signal: %s", exc)
         if key is not None:
-            await self._redis.delete(self._k.sig(key))
+            await self._redis.zrem(self._k.sig(key), receipt.message_id)
+
+    async def _has_backlog(self) -> bool:
+        """True while the signal group has undelivered entries.
+
+        ``XINFO GROUPS`` ``lag`` when Redis knows it; otherwise (``lag`` is
+        ``None`` after ``XDEL``/``XTRIM``) a bounded ``XRANGE`` after the
+        group's ``last-delivered-id``.
+        """
+        stream = self._store.stream_for(self.config.signal.name)
+        group = self.config.signal.groups[0].name
+        try:
+            groups = await self._redis.xinfo_groups(stream)
+        except Exception:  # noqa: BLE001 — no stream / group yet: nothing queued
+            return False
+        for info in groups:
+            data = {_as_str(k): v for k, v in info.items()}
+            if _as_str(data.get("name", "")) != group:
+                continue
+            lag = data.get("lag")
+            if lag is not None:
+                return int(lag) > 0
+            last = _as_str(data.get("last-delivered-id", "0-0"))
+            return bool(await self._redis.xrange(stream, min=f"({last}", max="+", count=1))
+        # No group yet (it is created from id "0" at the first receive): every
+        # entry in the stream is still undelivered.
+        return bool(await self._redis.xrange(stream, min="-", max="+", count=1))
 
     async def _release(self, lock: Lock) -> None:
         """Release a lock, tolerating one that already expired."""
@@ -549,7 +587,7 @@ class KeyedQueue:
             if not key:
                 await self._ack_signal(item.receipt)
                 continue
-            await self._mark_signal(str(key))  # (re)delivered: live for another window
+            await self._mark_signal(str(key), item.receipt.message_id)  # delivered: live again
             lease = await self.lease_key(str(key), receipt=item.receipt)
             if lease is not None:
                 return lease
@@ -924,16 +962,21 @@ class KeyedQueue:
     async def recover(self, *, force: bool = False) -> int:
         """Re-signal keys whose wake-up was lost (signal rule 5).
 
+        Recovery bound (the one documented everywhere): with no backlog, a key
+        whose signal was lost is re-signalled within *signal visibility +
+        ``recover_interval_ms``* (a marker whose signal was lost lives at most
+        one visibility window). While the signal group has undelivered entries
+        — or the queue is paused — recovery waits for the backlog to drain /
+        the pause to end: every queued key will be served first and nothing is
+        amplified.
+
         Throttled by ``SET recover NX PX recover_interval_ms`` — a rate limit,
         not a leader. One pass sweeps the WHOLE key set (``SSCAN`` until the
         cursor returns to 0; nothing is persisted across passes, so a crash
-        loses nothing and every orphan waits at most one interval). The
-        amplification is removed at the root: a key is re-signalled only when
-        it has no live signal (``sig:<k>`` marker) and is not locked; the
-        per-key checks are pipelined, and only the (rare) orphans cost more
-        round trips. A marker whose signal vanished (eviction, signal parked by
-        ``max_receives``) lapses after one signal-visibility window, so such a
-        key waits at most that window plus one interval.
+        loses nothing). A key is re-signalled only when it has no live signal
+        (a ``sig:<k>`` member per signal entry id, removed when THAT entry is
+        acked) and is not locked; the per-key checks are pipelined and only the
+        (rare) orphans cost more round trips.
 
         Args:
             force: Skip the throttle.
@@ -941,6 +984,8 @@ class KeyedQueue:
         Returns:
             The number of signals sent.
         """
+        if await self.is_paused() or await self._has_backlog():
+            return 0  # consumers are not receiving / will serve every queued signal first
         if not force:
             won = await self._redis.set(
                 self._k.recover,
@@ -963,14 +1008,16 @@ class KeyedQueue:
         names = sorted(found)
         for start in range(0, len(names), _PIPELINE_CHUNK):
             chunk = names[start: start + _PIPELINE_CHUNK]
+            now = self.now_ms()
             pipe = self._redis.pipeline(transaction=False)
             async with pipe:
                 for name in chunk:
-                    pipe.exists(self._k.sig(name))
+                    pipe.zremrangebyscore(self._k.sig(name), "-inf", now)  # expired markers
+                    pipe.zcard(self._k.sig(name))
                     pipe.exists(self._k.lock(name))
                 flags = await pipe.execute()
             for i, name in enumerate(chunk):
-                if flags[2 * i] or flags[2 * i + 1]:
+                if flags[3 * i + 1] or flags[3 * i + 2]:
                     continue  # live signal or in flight: not an orphan
                 if await self._reconcile(name):
                     sent += 1

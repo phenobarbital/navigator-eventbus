@@ -7,7 +7,17 @@ import pytest
 
 from navigator_eventbus.queues.keyed.config import LeaseLost, Outcome
 
-from .test_store import DLQ, build, clock, dlq, fake_redis, keyed, lose_signals  # noqa: F401
+from .test_store import (  # noqa: F401
+    DLQ,
+    build,
+    clock,
+    dlq,
+    fake_redis,
+    keyed,
+    live_signal_ids,
+    lose_signals,
+    stream_ids,
+)
 
 # ---------------------------------------------------------------------------
 # Group 1 — fences
@@ -352,25 +362,24 @@ async def test_r2_recover_one_pass_covers_every_orphan(clock, dlq, whole_set):
 
 
 async def test_r2_live_signal_is_never_resignalled(keyed, fake_redis, clock):
-    """(b): a key with a live signal is skipped across N passes (no amplification)."""
+    """(b)+R3-3: an undelivered signal never expires, so it is never duplicated,
+    however long it waits and however many passes run."""
     await keyed.push("w1", {})
     stream = fake_redis.streams[keyed._store.stream_for("punches-signal")]
     assert len(stream) == 1
     for _ in range(6):
         assert await keyed.recover(force=True) == 0
-        clock.advance_ms(1_000)
+        clock.advance_ms(30_000)  # far beyond the marker window
     assert len(stream) == 1
-    clock.advance_ms(30_000)  # marker lapsed with the signal lease → treated as lost
-    assert await keyed.recover(force=True) == 1
 
 
 async def test_r2_marker_cleared_on_ack_and_set_on_signal(keyed, fake_redis):
     await keyed.push("w1", {})
-    assert await fake_redis.exists(keyed._k.sig("w1")) == 1
+    assert len(live_signal_ids(keyed, fake_redis, "w1")) == 1
     lease = await keyed.lease()
-    assert await fake_redis.exists(keyed._k.sig("w1")) == 1  # holder keeps its signal live
+    assert len(live_signal_ids(keyed, fake_redis, "w1")) == 1  # holder keeps its signal live
     await keyed.apply(lease, Outcome.ack())
-    assert await fake_redis.exists(keyed._k.sig("w1")) == 0
+    assert live_signal_ids(keyed, fake_redis, "w1") == set()
 
 
 async def test_r2_crash_mid_pass_loses_nothing(fake_redis, clock, dlq):
@@ -390,8 +399,150 @@ async def test_r2_crash_mid_pass_loses_nothing(fake_redis, clock, dlq):
     with pytest.raises(ConnectionError):
         await q.recover()
     q._reconcile = real
-    recovered_later = await q.recover(force=True)  # the next pass, nothing persisted
+    # The 19 signals sent before the crash are a backlog: recover waits for them
+    # to be served (design: queued signals first), then the next pass finishes.
+    assert await q.recover(force=True) == 0
+    served = 0
+    while (lease := await q.lease()) is not None:
+        await q.apply(lease, Outcome.ack())
+        served += 1
+    assert served == 19
+    recovered_later = await q.recover(force=True)  # next pass, nothing persisted
     stream = fake_redis.streams[q._store.stream_for("punches-signal")]
-    keys = {json.loads(e[1]["envelope"])["payload"]["key"] for e in stream}
-    assert len(keys) == 50 and len(stream) == 50  # nothing lost, nothing duplicated
-    assert recovered_later == 31  # 19 were done before the crash
+    sent_keys = {json.loads(e[1]["envelope"])["payload"]["key"] for e in stream}
+    assert recovered_later == 31 and len(sent_keys) == 50  # nothing lost across passes
+    assert len(stream) == 50  # and nothing duplicated
+
+
+# ---------------------------------------------------------------------------
+# Round 3
+# ---------------------------------------------------------------------------
+
+
+async def test_r3_1_ack_of_old_signal_keeps_the_replacement_marker(keyed, fake_redis):
+    """push 2 → lease+ack the first: the replacement signal sent by reconcile must
+    stay marked live; acking the OLD receipt may only remove the OLD entry id."""
+    await keyed.push("w1", {"i": 1}, order=1)
+    await keyed.push("w1", {"i": 2}, order=2)
+    lease = await keyed.lease()
+    old_id = lease.receipt.message_id
+    await keyed.apply(lease, Outcome.ack())
+    live = live_signal_ids(keyed, fake_redis, "w1")
+    assert old_id not in live
+    assert live == set(stream_ids(keyed, fake_redis)) - {old_id}  # every OTHER signal is still marked
+    assert len(live) >= 1
+
+
+async def test_r3_1_busy_duplicate_ack_keeps_the_holders_marker(keyed, fake_redis):
+    await keyed.push("w1", {"i": 1})
+    holder = await keyed.lease()
+    holder_id = holder.receipt.message_id
+    await keyed.push("w1", {"i": 2})  # duplicate signal while the key is in flight
+    assert await keyed.lease() is None  # another consumer acks it as busy
+    assert holder_id in live_signal_ids(keyed, fake_redis, "w1")
+    await keyed.apply(holder, Outcome.ack())
+    assert holder_id not in live_signal_ids(keyed, fake_redis, "w1")
+
+
+async def test_r3_2_extend_does_not_mark_a_vanished_signal(keyed, fake_redis):
+    await keyed.push("w1", {})
+    lease = await keyed.lease()
+    await keyed._store.delete(keyed.config.signal, lease.receipt)  # signal gone (acked/parked)
+    await fake_redis.delete(keyed._k.sig("w1"))
+    await lease.extend()  # lock is still ours
+    assert live_signal_ids(keyed, fake_redis, "w1") == set()
+    assert await fake_redis.exists(keyed._k.sig("w1")) == 0
+
+
+async def test_r3_2_extend_still_refreshes_a_live_signal(keyed, fake_redis, clock):
+    await keyed.push("w1", {})
+    lease = await keyed.lease()
+    clock.advance_ms(8_000)
+    await lease.extend()
+    assert lease.receipt.message_id in live_signal_ids(keyed, fake_redis, "w1")
+    assert await fake_redis.zscore(keyed._k.sig("w1"), lease.receipt.message_id) > keyed.now_ms()
+
+
+async def test_r3_3_backlog_is_never_amplified(keyed, fake_redis, clock):
+    for i in range(40):
+        await keyed.push(f"k{i}", {})
+    n = len(stream_ids(keyed, fake_redis))
+    assert n == 40
+    for _ in range(5):
+        clock.advance_ms(60_001)  # marker windows lapse; nothing is consuming
+        assert await keyed.recover() == 0
+        assert await keyed.recover(force=True) == 0
+    assert len(stream_ids(keyed, fake_redis)) == n
+
+
+async def test_r3_3_lost_signal_recovered_once_backlog_drains(keyed, fake_redis, clock):
+    for i in range(10):
+        await keyed.push(f"k{i}", {})
+    # a lost signal for key "orphan" (head exists, signal never made it)
+    await fake_redis.zadd(keyed._k.key("orphan"), {"mo": 1})
+    await fake_redis.hset(keyed._k.msg("mo"), mapping={"key": "orphan", "body": "{}"})
+    await fake_redis.sadd(keyed._k.keys, "orphan")
+    clock.advance_ms(60_001)
+    assert await keyed.recover() == 0  # backlog: every queued key will be served first
+    while (lease := await keyed.lease()) is not None:
+        await keyed.apply(lease, Outcome.ack())  # drain the backlog
+        if lease.key == "orphan":
+            break
+    assert not [k for k in await keyed.keys() if k != "orphan"]
+    # signals drained; now the orphan IS recovered within one interval
+    await fake_redis.zadd(keyed._k.key("orphan"), {"mo": 1})
+    await fake_redis.hset(keyed._k.msg("mo"), mapping={"key": "orphan", "body": "{}"})
+    await fake_redis.sadd(keyed._k.keys, "orphan")
+    clock.advance_ms(60_001)
+    assert await keyed.recover() == 1
+
+
+async def test_r3_3_recover_is_quiet_while_paused(fake_redis, clock, dlq):
+    q = build(fake_redis, clock, dlq)
+    await _orphans(q, fake_redis, 20)
+    await q.pause(ttl_ms=10_000_000, reason="downstream down")
+    for _ in range(4):
+        clock.advance_ms(60_001)
+        assert await q.recover() == 0
+    assert stream_ids(q, fake_redis) == []
+    await q.resume()
+    assert await q.recover(force=True) == 20
+
+
+async def test_r3_3_backlog_check_falls_back_to_xrange_when_lag_is_unknown(
+    keyed, fake_redis, monkeypatch
+):
+    """Redis reports lag=None after XDEL/XTRIM: undelivered entries must still count."""
+    await keyed.push("w1", {})
+    real = fake_redis.xinfo_groups
+
+    async def lag_unknown(name):
+        return [{**g, "lag": None} for g in await real(name)]
+
+    monkeypatch.setattr(fake_redis, "xinfo_groups", lag_unknown)
+    assert await keyed._has_backlog() is True
+    lease = await keyed.lease()
+    assert await keyed._has_backlog() is False
+    await keyed.apply(lease, Outcome.ack())
+
+
+async def test_r3_4_lost_signal_bound_is_visibility_plus_interval(fake_redis, clock, dlq):
+    """The ONE documented bound: with no backlog a lost signal's key is re-signalled
+    within signal visibility + recover_interval_ms (a marker outlives its signal by
+    at most one visibility window)."""
+    q = build(fake_redis, clock, dlq)
+    visibility = q.config.signal.default_visibility_timeout_ms
+    interval = q.config.recover_interval_ms
+    await q.push("w1", {})
+    # the signal entry is lost but its marker is still live (parked / evicted entry)
+    fake_redis.streams[q._store.stream_for("punches-signal")].clear()
+    waited, signalled_at = 0, None
+    while waited <= visibility + interval + 1_000:
+        if await q.recover() >= 1:
+            signalled_at = waited
+            break
+        clock.advance_ms(1_000)
+        waited += 1_000
+    assert signalled_at is not None, "never recovered"
+    assert signalled_at >= visibility  # never earlier than the marker's window
+    assert signalled_at <= visibility + interval

@@ -57,8 +57,20 @@ def lose_signals(q: KeyedQueue, fake_redis) -> None:
     """Simulate lost wake-ups: the signal entries AND their liveness markers vanish
     (what an eviction / a parked signal looks like once the marker TTL lapsed)."""
     fake_redis.streams[q._store.stream_for("punches-signal")].clear()
-    for name in [n for n in fake_redis.strings if n.startswith(q._k.base + "sig:")]:
-        del fake_redis.strings[name]
+    for name in [n for n in fake_redis.zsets if n.startswith(q._k.base + "sig:")]:
+        del fake_redis.zsets[name]
+
+
+def live_signal_ids(q: KeyedQueue, fake_redis, key: str) -> set[str]:
+    """Entry ids the queue currently believes are live signals for *key*."""
+    now = q.now_ms()
+    return {
+        m for m, expires in fake_redis.zsets.get(q._k.sig(key), {}).items() if expires > now
+    }
+
+
+def stream_ids(q: KeyedQueue, fake_redis) -> list[str]:
+    return [mid for mid, _ in fake_redis.streams.get(q._store.stream_for("punches-signal"), [])]
 
 
 @pytest.fixture

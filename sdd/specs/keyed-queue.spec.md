@@ -120,7 +120,7 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
 | `all` | zset | member = `message_id`, score = `created_ms` (oldest-age metric, `max_age` scan) |
 | `paused` | string | reason; `PX` = pause TTL |
 | `recover` | string | `SET NX PX recover_interval_ms` throttle token for `recover()` — a rate limit, not a leader: whoever wins runs one pass, nobody owns anything |
-| `sig:<k>` | string | liveness marker of key `k`'s wake-up signal (`SET PX` = signal visibility); set when a signal is sent, delivered or extended, deleted when acked. `recover()` re-signals only keys with no marker and no lock |
+| `sig:<k>` | zset | live signals of key `k`: member = stream entry id, score = liveness deadline ms (signal visibility after send / delivery / extend); a member is removed when THAT entry is acked. `recover()` re-signals only keys with no live member and no lock |
 | `lastscore` | string | last default `order` handed out (read + written inside `push`'s WATCH/MULTI): default `order` = `max(now_ms, last + 2^-10)` — strictly increasing for any burst, exact in a double (multiples of 2^-10, epoch-ms < 2^43) |
 
 **Signal lifetime rules (v0.2, load-bearing for liveness).**
@@ -135,11 +135,17 @@ Per queue `<q>` under prefix `evq:keyed:<q>:` (disjoint from the bus prefix
 4. While the queue is paused, consumers **do not call `receive()`** at all: they sleep until
    `is_paused()` clears. A paused queue never cycles signals, so `max_receives` (pull plane,
    `ge=1`, default 5 — `queues/config.py:120`) is never consumed by a pause.
-5. Signals stay hints. `recover()` is the backstop that makes a lost signal (consumer crash
-   between `ZREM delayed` and `send`, a signal parked by `max_receives`, Redis eviction)
-   cost at most one `recover_interval_ms` (plus, when only the `sig:<k>` marker outlived the
-   signal, one signal-visibility window). One pass sweeps the whole key set; nothing is
-   persisted across passes.
+5. Signals stay hints. `recover()` is the backstop for a lost signal (consumer crash between
+   `ZREM delayed` and `send`, a signal parked by `max_receives`, Redis eviction). **Recovery
+   bound (the only one): with no backlog, a key whose signal was lost is re-signalled within
+   `signal visibility + recover_interval_ms`** (the `sig:<k>` marker of a lost signal lives at
+   most one visibility window). While the signal group has undelivered entries (`XINFO GROUPS`
+   lag > 0, or `XRANGE` after `last-delivered-id` when lag is unknown) or the queue is paused,
+   `recover()` stays quiet: every queued key will be served first, and nothing is amplified.
+   One pass sweeps the whole key set; nothing is persisted across passes. Each signal entry
+   id is a member of `sig:<k>`, removed only when THAT entry is acked (so acking an old or a
+   busy-duplicate signal never hides a live one); `KeyedLease.extend()` refreshes the member
+   only if the signal is still pending.
 
 ### Component Diagram
 
@@ -467,7 +473,7 @@ def keyed(fake_redis, clock) -> KeyedQueue:
 - [ ] `drain` never delivers a key that a live consumer holds (`busy`), and never delivers out of order inside a key.
 - [ ] No change to `QueueStore`, `RedisStreamsBackend`, `BusCore` behaviour; `tests/queues/test_store.py` unchanged and green.
 - [ ] `CHANGELOG.md` 0.5.0 entry, README subsection, lazy exports.
-- [ ] A pause never consumes signal deliveries; a consumer crash or a lost signal delays a key by at most `max(lock_ttl_ms, recover_interval_ms)`, never forever.
+- [ ] A pause never consumes signal deliveries; a consumer crash delays a key by at most `lock_ttl_ms`, and a lost signal (no backlog) by at most `signal visibility + recover_interval_ms`, never forever.
 - [ ] `apply` is fenced by token + generation in one `WATCH`/`MULTI`; a stale outcome changes nothing.
 - [ ] A retry delay is honoured even when the key is re-signalled early.
 - [ ] `drain(key_prefix=…)` never touches keys outside the prefix.
