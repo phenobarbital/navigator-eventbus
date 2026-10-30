@@ -176,6 +176,56 @@ All keys are read via `navconfig` (flattened env/TOML keys); every key
 below has a documented in-code default and can also be overridden per
 constructor kwarg where noted.
 
+
+### Keyed queues (ordered, head-blocking)
+
+Needs the `[redis]` extra. A `KeyedQueue` (in `navigator_eventbus.queues.keyed`) gives
+**per-key FIFO with at most one message in flight per key** across any number of identical
+consumers — no leader. Messages of a key are ordered by a caller-supplied `order` score; the
+consumer leases the *head* of a key and returns one of four outcomes:
+
+| Outcome | Effect |
+|---|---|
+| `Outcome.ack()` | head removed, next one signalled |
+| `Outcome.retry(delay_ms=None, reason=...)` | head stays, key delayed (capped exponential backoff by default) |
+| `Outcome.wait(until_ms=None, reason=...)` | head stays, key blocked until the deadline (default `wait_safety_ms`) or a re-signal after it |
+| `Outcome.hold(reason)` | head stays, key parked until `release_hold(key)` |
+
+```python
+from navigator_eventbus.queues.keyed import KeyedConsumer, KeyedQueue, KeyedQueueConfig, Outcome
+
+queue = KeyedQueue(KeyedQueueConfig(name="punches", signal=signal_cfg), redis_client, store=store)
+await queue.push("worker-7", {"kind": "clock-in"}, message_id="p-1", order=1700000000)
+
+async def handler(msg) -> Outcome:
+    ...                                   # talk to the downstream
+    return Outcome.ack()
+
+await KeyedConsumer(queue).run(handler, stop=stop_event)
+report = await queue.drain(handler, key_prefix="tenant-a:")   # administrative flush
+```
+
+How it stays live: a wake-up *signal* (a normal pull queue) is only a hint; the per-key sorted
+set is the order and the per-key lock the exclusion. The signal lease outlives the lock
+(`signal.default_visibility_timeout_ms > lock_ttl_ms`), consumers never `receive()` while
+paused, and `recover()` re-signals keys whose hint was lost. A crashed holder delays its key at
+most `max(lock_ttl_ms, signal visibility)` (its abandoned signal is reclaimed only after the
+visibility window); with no backlog a lost signal is recovered within *signal visibility +
+`recover_interval_ms`*, and while the signal group has undelivered entries (or the queue is
+paused) `recover()` waits for the backlog to drain instead of amplifying it.
+
+Caveats:
+- `push` is idempotent by `message_id`, but after an `ack` the message is gone: re-pushing the
+  same id from your own record recreates it, so the handler must check that record and `ack`
+  without side effects when the work is already done. Redis is not the record of truth.
+- `KeyedConsumer` turns handler exceptions and timeouts into `retry`. A handler with a
+  non-idempotent side effect must catch `asyncio.CancelledError`/`TimeoutError` itself and
+  return its own outcome. A stale outcome (lock expired) raises `LeaseLost` and changes nothing.
+- `recover()` may add at most one duplicate signal per key per signal-visibility window (and one
+  per overlapping pass). Duplicates are acked as busy/empty; liveness is preferred over
+  exact-once signalling.
+- Direct `lease()` users must call `lease.extend()` for handlers longer than `lock_ttl_ms`.
+
 ### BusCore / EventBus facade (`evb.py`, `core.py`)
 
 | navconfig key | Constructor kwarg | Default | Notes |
