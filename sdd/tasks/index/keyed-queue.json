@@ -35,7 +35,7 @@
       "feature_id": "FEAT-713",
       "feature": "keyed-queue",
       "spec": "sdd/specs/keyed-queue.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [],
@@ -43,8 +43,9 @@
       "parallelism_notes": "none: test helper only (tests/queues/_fake_streams.py); no other task modifies it",
       "assigned_to": null,
       "started_at": "2026-10-30T02:54:04+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4574-fake-redis-keyed-commands.md"
+      "completed_at": "2026-10-30T02:56:01+00:00",
+      "file": "sdd/tasks/completed/TASK-4574-fake-redis-keyed-commands.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4575",

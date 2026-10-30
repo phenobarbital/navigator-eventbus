@@ -221,4 +221,4 @@ Touch only `tests/queues/_fake_streams.py` and the new test file. Never mock `Lo
 
 ## Completion Note
 
-*(filled by the implementing agent)*
+Implemented in tests/queues/_fake_streams.py + tests/queues/test_fake_redis_keyed.py. Additions beyond the blueprint (same files): `FakeStreamsRedis.lock()` (returns a real redis `Lock` bound to the fake, mirrors `Redis.lock`), emulation of `LUA_REACQUIRE_SCRIPT` too, expiry of a watched key does NOT abort EXEC (matches Redis >= 6.0.9), container keys vanish when emptied. Test file name per Files table (`test_fake_redis_keyed.py`). `tests/queues`: 202 passed.
