@@ -56,7 +56,12 @@ class KeyedConsumer:
         lease = await queue.lease(wait_ms=self.wait_ms)
         if lease is None:
             return None
-        outcome = await self._handle(handler, lease)
+        try:
+            outcome = await self._handle(handler, lease)
+        except asyncio.CancelledError:
+            # Graceful stop: do not leave the key locked for lock_ttl_ms.
+            await asyncio.shield(queue._release(lease.lock))
+            raise
         try:
             await queue.apply(lease, outcome)
         except LeaseLost as exc:
@@ -101,6 +106,10 @@ class KeyedConsumer:
             except LeaseLost as exc:
                 self.logger.warning("lease on key %r could not be extended: %s", lease.key, exc)
                 return
+            except Exception as exc:  # noqa: BLE001 — transient Redis error: retry next tick
+                self.logger.warning(
+                    "lease on key %r: extend failed (%r); retrying", lease.key, exc
+                )
 
     async def run(self, handler: Handler, *, stop: asyncio.Event) -> None:
         """Loop :meth:`run_once` until ``stop`` is set.

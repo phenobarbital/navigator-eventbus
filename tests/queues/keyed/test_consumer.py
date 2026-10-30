@@ -137,3 +137,50 @@ async def test_run_stops_and_survives_errors(keyed):
 
     await asyncio.wait_for(consumer.run(handler, stop=stop), timeout=5)
     assert calls["n"] >= 2 and stop.is_set()
+
+
+async def test_keeper_survives_transient_extend_error(fake_redis, clock):
+    q = build(fake_redis, clock, lock_ttl_ms=300)
+    await q.push("w1", {})
+    from navigator_eventbus.queues.keyed.store import KeyedLease
+
+    real = KeyedLease.extend
+    calls = {"n": 0}
+
+    async def flaky(self, additional_ms=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("blip")
+        return await real(self, additional_ms)
+
+    KeyedLease.extend = flaky
+    try:
+        async def long(msg):
+            for _ in range(4):
+                clock.advance_ms(100)
+                await asyncio.sleep(0.12)
+            return Outcome.ack()
+
+        out = await KeyedConsumer(q, wait_ms=0).run_once(long)
+    finally:
+        KeyedLease.extend = real
+    assert out is not None and calls["n"] >= 2
+
+
+async def test_cancellation_releases_lock(keyed, fake_redis):
+    await keyed.push("w1", {})
+    started = asyncio.Event()
+
+    async def hang(msg):
+        started.set()
+        await asyncio.sleep(60)
+
+    task = asyncio.create_task(KeyedConsumer(keyed, wait_ms=0).run_once(hang))
+    await started.wait()
+    assert await fake_redis.exists(keyed._k.lock("w1")) == 1
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert await fake_redis.exists(keyed._k.lock("w1")) == 0

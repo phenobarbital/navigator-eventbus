@@ -142,7 +142,9 @@ class KeyedLease:
         if self.receipt is not None:
             # Signal rule 2: the signal lease must outlive the lock.
             margin = cfg.signal.default_visibility_timeout_ms - cfg.lock_ttl_ms
-            visibility = min(ms + margin, cfg.signal.max_visibility_timeout_ms)
+            visibility = min(
+                max(ms + margin, ms + 1), cfg.signal.max_visibility_timeout_ms
+            )
             try:
                 await queue._store.change_visibility(
                     cfg.signal, self.receipt, visibility
@@ -283,6 +285,7 @@ class KeyedQueue:
                     pipe.multi()
                     pipe.srem(self._k.keys, key)
                     pipe.zrem(self._k.delayed, key)
+                    pipe.hdel(self._k.held, key)  # a hold on an empty key is an orphan
                     await pipe.execute()
                     return True
             except WatchError:
@@ -313,7 +316,8 @@ class KeyedQueue:
             key: Ordering key.
             body: JSON-serialisable message body.
             message_id: Idempotency id (default: a fresh uuid).
-            order: Sort score within the key (default: enqueue time in ms).
+            order: Sort score within the key (default: enqueue time in ms plus a
+                sub-ms arrival counter, so same-ms pushes stay in order).
 
         Returns:
             The message id.
@@ -323,7 +327,13 @@ class KeyedQueue:
         """
         mid = message_id or uuid4().hex
         now = self.now_ms()
-        score = float(order) if order is not None else float(now)
+        if order is not None:
+            score = float(order)
+        else:
+            # Default order = enqueue time; a shared counter adds a sub-ms
+            # fraction so same-millisecond pushes keep arrival order.
+            seq = await self._redis.hincrby(self._k.base + "seq", "n", 1)
+            score = float(now) + (int(seq) % 1000) / 1000.0
         msg_name = self._k.msg(mid)
         fields = {
             "message_id": mid,
@@ -769,7 +779,7 @@ class KeyedQueue:
         if await self._redis.hdel(self._k.held, key) == 0:
             return False
         head = await self._redis.zrange(self._k.key(key), 0, 0)
-        if head:
+        if head and await self._redis.exists(self._k.msg(_as_str(head[0]))):
             await self._redis.hset(
                 self._k.msg(_as_str(head[0])), mapping={"state": "pending"}
             )

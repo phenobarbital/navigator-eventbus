@@ -117,6 +117,8 @@ async def _run_handler(
                 await lease.extend()
             except LeaseLost:
                 return
+            except Exception as exc:  # noqa: BLE001 — transient Redis error: retry next tick
+                _logger.warning("drain: extend failed for %r (%r); retrying", lease.key, exc)
 
     keeper = asyncio.ensure_future(keep())
     try:

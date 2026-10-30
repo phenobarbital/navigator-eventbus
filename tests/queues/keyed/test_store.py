@@ -368,3 +368,29 @@ async def test_prefix_must_be_disjoint(fake_redis, clock):
 
     with pytest.raises(Exception):
         build(fake_redis, clock, prefix=DEFAULT_QUEUE_PREFIX)
+
+
+async def test_same_millisecond_pushes_keep_arrival_order(keyed):
+    ids = ["z", "y", "x", "w", "v"]  # reverse-lexical ids: ties must not decide
+    for i, mid in enumerate(ids):
+        await keyed.push("w1", {"i": i}, message_id=mid)
+    got = []
+    for _ in ids:
+        lease = await keyed.lease_key("w1")
+        got.append(lease.message.body["i"])
+        await keyed.apply(lease, Outcome.ack())
+    assert got == [0, 1, 2, 3, 4]
+
+
+async def test_hold_on_vanished_message_is_cleared(keyed, fake_redis):
+    await keyed.push("w1", {})
+    lease = await keyed.lease()
+    await keyed.apply(lease, Outcome.hold("op"))
+    # Redis lost the message hash: the held entry must not block the key forever
+    await fake_redis.delete(keyed._k.msg(lease.message.message_id))
+    assert await keyed.release_hold("w1") is True  # must not resurrect a ghost hash
+    assert await fake_redis.exists(keyed._k.msg(lease.message.message_id)) == 0
+    await fake_redis.hset(keyed._k.held, "w1", "{}")  # orphan hold again
+    assert await keyed.lease_key("w1") is None  # dangling member repaired, key empty
+    assert await fake_redis.hget(keyed._k.held, "w1") is None
+    assert not await fake_redis.sismember(keyed._k.keys, "w1")
