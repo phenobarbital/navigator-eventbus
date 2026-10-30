@@ -179,4 +179,4 @@ async def drain_key(queue: KeyedQueue, key: str, handler: Handler, sem: asyncio.
 
 ## Completion Note
 
-*(filled by the implementing agent)*
+drain.py, store.py (`_lease_key_detailed(key, receipt, ignore_due)` returning a reason; `lease_key` is a wrapper with unchanged behaviour; `KeyedQueue.drain` delegate), test_drain.py (11 tests). Lock is taken per head (lease→apply releases), as the task notes allow; a consumer grabbing the key between heads → `busy`, stop that key. `expired` = delta of `queue.expired_count` (so concurrent drains on the same instance share it). `drain_key` got an optional keyword `state` (fail-fast counter) beyond the spec signature; the handler/extender helper is duplicated in drain.py rather than touching consumer.py (file fidelity). Re-signals produced by `apply` while draining are harmless duplicates. `tests/queues`: 257 passed.

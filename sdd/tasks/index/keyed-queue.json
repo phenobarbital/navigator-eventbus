@@ -118,7 +118,7 @@
       "feature_id": "FEAT-713",
       "feature": "keyed-queue",
       "spec": "sdd/specs/keyed-queue.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -129,8 +129,9 @@
       "parallelism_notes": "modifies queues/keyed/store.py after TASK-4576 (adds drain delegate below describe); imports Handler from TASK-4577 (queues/keyed/consumer.py)",
       "assigned_to": null,
       "started_at": "2026-10-30T02:54:04+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4578-keyed-drain.md"
+      "completed_at": "2026-10-30T04:10:53+00:00",
+      "file": "sdd/tasks/completed/TASK-4578-keyed-drain.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4579",
