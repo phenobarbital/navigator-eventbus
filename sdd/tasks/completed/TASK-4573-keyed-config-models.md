@@ -257,4 +257,4 @@ Implement exactly the files above. Do not touch `navigator_eventbus/queues/__ini
 
 ## Completion Note
 
-*(filled by the implementing agent)*
+Implemented as specified (config.py, __init__.py, tests/queues/keyed/test_config.py). Deviation: the acceptance wording "imports without importing redis" can't be asserted at runtime because the base `navigator_eventbus` package already loads `redis`; the test instead asserts the keyed config modules contain no redis import. `tests/queues`: 191 passed. Seat: sdd-worker (sequential fallback, no MCP seats per brief).
