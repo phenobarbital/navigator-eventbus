@@ -186,6 +186,7 @@ class FakeStreamsRedis:
         return len(self.streams.get(name, []))
 
     async def xdel(self, name, *ids):
+        self._check(name, "stream")
         self._record("xdel", name, ids=ids)
         entries = self.streams.get(name, [])
         targets = set(ids)
@@ -193,6 +194,7 @@ class FakeStreamsRedis:
         return len(entries) - len(self.streams[name])
 
     async def xtrim(self, name, maxlen=None, approximate=True, minid=None):
+        self._check(name, "stream")
         self._record("xtrim", name, maxlen=maxlen, minid=minid)
         entries = self.streams.get(name, [])
         if maxlen is not None:
@@ -205,6 +207,7 @@ class FakeStreamsRedis:
     # -- group ops -----------------------------------------------------
 
     async def xgroup_create(self, name, groupname, id="0", mkstream=False):
+        self._check(name, "stream")
         self._record("xgroup_create", name, groupname, id=id)
         if mkstream:
             self.streams.setdefault(name, [])
@@ -220,15 +223,18 @@ class FakeStreamsRedis:
         return True
 
     async def xgroup_destroy(self, name, groupname):
+        self._check(name, "stream")
         self._record("xgroup_destroy", name, groupname)
         return 1 if self.groups.pop((name, groupname), None) is not None else 0
 
     async def xgroup_delconsumer(self, name, groupname, consumername):
+        self._check(name, "stream")
         state = self._group(name, groupname)
         state["consumers"].pop(consumername, None)
         return 0
 
     async def xinfo_groups(self, name):
+        self._check(name, "stream")
         out = []
         entries = self.streams.get(name, [])
         for (stream, group), state in self.groups.items():
@@ -247,6 +253,7 @@ class FakeStreamsRedis:
         return out
 
     async def xinfo_consumers(self, name, groupname):
+        self._check(name, "stream")
         state = self._group(name, groupname)
         out = []
         for consumer, last_seen in state["consumers"].items():
@@ -262,6 +269,8 @@ class FakeStreamsRedis:
     # -- consumption ---------------------------------------------------
 
     async def xreadgroup(self, groupname, consumername, streams, count=None, block=None):
+        for _stream_name in streams:
+            self._check(_stream_name, "stream")
         self._record("xreadgroup", groupname, consumername, block=block, count=count)
         result = []
         for stream, cursor in streams.items():
@@ -286,6 +295,7 @@ class FakeStreamsRedis:
         return result
 
     async def xack(self, name, groupname, *ids):
+        self._check(name, "stream")
         state = self._group(name, groupname)
         removed = 0
         for message_id in ids:
@@ -297,6 +307,7 @@ class FakeStreamsRedis:
     async def xpending_range(
         self, name, groupname, min="-", max="+", count=10, idle=None, consumername=None
     ):
+        self._check(name, "stream")
         state = self._group(name, groupname)
         out = []
         for message_id, entry in sorted(
@@ -324,6 +335,7 @@ class FakeStreamsRedis:
     async def xautoclaim(
         self, name, groupname, consumername, min_idle_time, start_id="0-0", count=10
     ):
+        self._check(name, "stream")
         self._record("xautoclaim", name, groupname, min_idle_time=min_idle_time)
         state = self._group(name, groupname)
         state["consumers"].setdefault(consumername, True)
@@ -359,6 +371,7 @@ class FakeStreamsRedis:
         idle=None,
         justid=False,
     ):
+        self._check(name, "stream")
         self._record(
             "xclaim", name, groupname, consumername, idle=idle, justid=justid
         )

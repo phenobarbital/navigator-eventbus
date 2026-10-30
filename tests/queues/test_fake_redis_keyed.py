@@ -257,3 +257,35 @@ async def test_unknown_script_rejected(r):
     with pytest.raises(NotImplementedError):
         await script(keys=["k"], args=["t"], client=r)
     assert Lock.LUA_RELEASE_SCRIPT  # sanity: scripts used by the shim exist
+
+
+async def test_wrongtype_for_every_stream_command(r):
+    """R2-4: `SET x v; XDEL x 1-0` must not create a stream beside the string."""
+    from redis.exceptions import ResponseError
+
+    await r.set("x", "v")
+    stream_calls = [
+        lambda: r.xadd("x", {"a": "1"}),
+        lambda: r.xlen("x"),
+        lambda: r.xdel("x", "1-0"),
+        lambda: r.xtrim("x", maxlen=1),
+        lambda: r.xgroup_create("x", "g", id="0", mkstream=True),
+        lambda: r.xgroup_destroy("x", "g"),
+        lambda: r.xgroup_delconsumer("x", "g", "c"),
+        lambda: r.xinfo_groups("x"),
+        lambda: r.xinfo_consumers("x", "g"),
+        lambda: r.xreadgroup("g", "c", {"x": ">"}, count=1),
+        lambda: r.xack("x", "g", "1-0"),
+        lambda: r.xpending_range("x", "g", min="-", max="+", count=1),
+        lambda: r.xautoclaim("x", "g", "c", 0),
+        lambda: r.xclaim("x", "g", "c", 0, ["1-0"]),
+    ]
+    for call in stream_calls:
+        with pytest.raises(ResponseError, match="WRONGTYPE"):
+            await call()
+    assert "x" not in r.streams and await r.get("x") == "v"
+    # and the other direction: a real stream rejects string/hash commands
+    await r.xadd("s", {"a": "1"})
+    for call in (lambda: r.get("s"), lambda: r.hset("s", "a", "1")):
+        with pytest.raises(ResponseError, match="WRONGTYPE"):
+            await call()
