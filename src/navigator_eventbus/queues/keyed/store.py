@@ -669,3 +669,121 @@ class KeyedQueue:
         """Return the pause reason, or ``None`` when not paused."""
         value = await self._redis.get(self._k.paused)
         return None if value is None else _as_str(value)
+
+    # ------------------------------------------------------------------
+    # operations (TASK-4576)
+    # ------------------------------------------------------------------
+
+    async def promote_due(self, *, limit: Optional[int] = None) -> int:
+        """Move due keys from ``delayed`` to the signal stream.
+
+        Safe from N consumers with no leader: ``ZREM`` is atomic per member, so
+        only the caller whose ``ZREM`` returned 1 sends the signal.
+
+        Args:
+            limit: Max keys to promote (default ``promote_batch``).
+
+        Returns:
+            The number of signals this call sent.
+        """
+        batch = limit or self.config.promote_batch
+        due = await self._redis.zrangebyscore(
+            self._k.delayed, "-inf", self.now_ms(), start=0, num=batch
+        )
+        sent = 0
+        for raw in due:
+            key = _as_str(raw)
+            if await self._redis.zrem(self._k.delayed, key) == 1:
+                await self._signal(key)
+                sent += 1
+        return sent
+
+    async def recover(self, *, force: bool = False) -> int:
+        """Re-signal keys whose wake-up may have been lost (signal rule 5).
+
+        Throttled by ``SET recover NX PX recover_interval_ms`` — a rate limit,
+        not a leader: whoever wins runs one pass and owns nothing afterwards.
+        A key is signalled when it is not locked, not held and has no
+        ``delayed`` entry.
+
+        Args:
+            force: Skip the throttle.
+
+        Returns:
+            The number of signals sent.
+        """
+        if not force:
+            won = await self._redis.set(
+                self._k.recover,
+                self._consumer,
+                nx=True,
+                px=self.config.recover_interval_ms,
+            )
+            if not won:
+                return 0
+        sent = 0
+        for raw in sorted(await self._redis.smembers(self._k.keys)):
+            key = _as_str(raw)
+            if await self._redis.exists(self._k.lock(key)):
+                continue
+            if await self._redis.hget(self._k.held, key) is not None:
+                continue
+            if await self._redis.zscore(self._k.delayed, key) is not None:
+                continue
+            await self._signal(key)
+            sent += 1
+        return sent
+
+    async def release_hold(self, key: str) -> bool:
+        """Clear a hold; the head becomes pending and the key is signalled.
+
+        Args:
+            key: The held key.
+
+        Returns:
+            ``True`` when a hold existed and was released.
+        """
+        if await self._redis.hdel(self._k.held, key) == 0:
+            return False
+        head = await self._redis.zrange(self._k.key(key), 0, 0)
+        if head:
+            await self._redis.hset(
+                self._k.msg(_as_str(head[0])), mapping={"state": "pending"}
+            )
+        await self._signal(key)
+        return True
+
+    async def peek(self, key: str, *, limit: int = 10) -> list[KeyedMessage]:
+        """Return the first *limit* messages of *key* in order (read-only)."""
+        ids = await self._redis.zrange(self._k.key(key), 0, max(limit, 1) - 1)
+        out: list[KeyedMessage] = []
+        for raw in ids:
+            mid = _as_str(raw)
+            data = await self._redis.hgetall(self._k.msg(mid))
+            if data:
+                out.append(_to_message(data, mid))
+        return out
+
+    async def keys(self) -> list[str]:
+        """Return the keys with at least one pending message, sorted."""
+        return sorted(_as_str(k) for k in await self._redis.smembers(self._k.keys))
+
+    async def describe(self) -> dict[str, Any]:
+        """Operational snapshot; alarm on ``oldest_age_ms``.
+
+        Returns:
+            ``name``, ``keys``, ``messages``, ``delayed``, ``held``, ``paused``
+            (reason or ``None``) and ``oldest_age_ms`` (``None`` when empty).
+        """
+        oldest = await self._redis.zrange(self._k.all, 0, 0, withscores=True)
+        return {
+            "name": self.config.name,
+            "keys": await self._redis.scard(self._k.keys),
+            "messages": await self._redis.zcard(self._k.all),
+            "delayed": await self._redis.zcard(self._k.delayed),
+            "held": await self._redis.hlen(self._k.held),
+            "paused": await self.is_paused(),
+            "oldest_age_ms": (
+                max(0, self.now_ms() - int(oldest[0][1])) if oldest else None
+            ),
+        }
