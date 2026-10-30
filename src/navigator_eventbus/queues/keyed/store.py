@@ -418,29 +418,49 @@ class KeyedQueue:
         Returns:
             A lease, or ``None`` (the signal receipt is acked in that case).
         """
+        lease, _ = await self._lease_key_detailed(key, receipt=receipt)
+        return lease
+
+    async def _lease_key_detailed(
+        self,
+        key: str,
+        *,
+        receipt: Optional[Receipt] = None,
+        ignore_due: bool = False,
+    ) -> tuple[Optional[KeyedLease], str]:
+        """``lease_key`` plus the reason for a ``None`` (``drain`` needs it).
+
+        Reasons: ``"leased"``, ``"busy"``, ``"empty"``, ``"held"``, ``"waiting"``.
+        ``ignore_due`` skips the retry-delay (``due_ms``) check but never a
+        ``wait`` deadline.
+        """
         lock = self._new_lock(key)
         if not await lock.acquire(blocking=False):
             await self._ack_signal(receipt)
-            return None
+            return None, "busy"
         try:
-            lease = await self._lease_locked(key, lock, receipt)
+            lease, reason = await self._lease_locked(key, lock, receipt, ignore_due)
         except BaseException:
             await self._release(lock)
             raise
         if lease is None:
             await self._release(lock)
             await self._ack_signal(receipt)
-        return lease
+        return lease, reason
 
     async def _lease_locked(
-        self, key: str, lock: Lock, receipt: Optional[Receipt]
-    ) -> Optional[KeyedLease]:
+        self,
+        key: str,
+        lock: Lock,
+        receipt: Optional[Receipt],
+        ignore_due: bool = False,
+    ) -> tuple[Optional[KeyedLease], str]:
         zkey = self._k.key(key)
         while True:
             head = await self._redis.zrange(zkey, 0, 0)
             if not head:
                 await self._drop_key_if_empty(key)
-                return None
+                return None, "empty"
             mid = _as_str(head[0])
             raw = await self._redis.hgetall(self._k.msg(mid))
             if not raw:  # dangling member (hash lost): repair and continue
@@ -452,15 +472,15 @@ class KeyedQueue:
             if await self.expire_head(key, message):
                 continue
             if await self._redis.hget(self._k.held, key) is not None:
-                return None
+                return None, "held"
             deadline = 0
             if message.state == "waiting" and (message.wait_until_ms or 0) > now:
                 deadline = message.wait_until_ms or 0
-            if (message.due_ms or 0) > now:
+            if not ignore_due and (message.due_ms or 0) > now:
                 deadline = max(deadline, message.due_ms or 0)
             if deadline:
                 await self._redis.zadd(self._k.delayed, {key: float(deadline)})
-                return None
+                return None, "waiting"
             gen = await self._redis.hincrby(self._k.msg(mid), "gen", 1)
             await self._redis.hset(
                 self._k.msg(mid),
@@ -474,9 +494,12 @@ class KeyedQueue:
                     "due_ms": None,
                 }
             )
-            return KeyedLease(
-                key=key, message=message, lock=lock, gen=int(gen),
-                receipt=receipt, _queue=self,
+            return (
+                KeyedLease(
+                    key=key, message=message, lock=lock, gen=int(gen),
+                    receipt=receipt, _queue=self,
+                ),
+                "leased",
             )
 
     # ------------------------------------------------------------------
@@ -787,3 +810,28 @@ class KeyedQueue:
                 max(0, self.now_ms() - int(oldest[0][1])) if oldest else None
             ),
         }
+
+    async def drain(
+        self,
+        handler: Any,
+        *,
+        key_prefix: Optional[str] = None,
+        concurrency: int = 10,
+        call_timeout_ms: Optional[int] = None,
+        stop_after_failures: int = 5,
+        include_held: bool = False,
+        ignore_pause: bool = False,
+    ) -> Any:
+        """Direct administrative flush; see :func:`navigator_eventbus.queues.keyed.drain.drain`."""
+        from navigator_eventbus.queues.keyed.drain import drain as _drain
+
+        return await _drain(
+            self,
+            handler,
+            key_prefix=key_prefix,
+            concurrency=concurrency,
+            call_timeout_ms=call_timeout_ms,
+            stop_after_failures=stop_after_failures,
+            include_held=include_held,
+            ignore_pause=ignore_pause,
+        )
