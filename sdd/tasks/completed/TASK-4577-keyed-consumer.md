@@ -168,4 +168,4 @@ Implement exactly the files above.
 
 ## Completion Note
 
-*(filled by the implementing agent)*
+consumer.py + test_consumer.py (9 tests). A non-`Outcome` handler return becomes a retry (TypeError text). Pause test uses `pause_poll_ms=1` so the loop doesn't really sleep 1s x 50. `tests/queues`: passes.

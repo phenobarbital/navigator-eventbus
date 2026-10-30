@@ -97,7 +97,7 @@
       "feature_id": "FEAT-713",
       "feature": "keyed-queue",
       "spec": "sdd/specs/keyed-queue.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "M",
       "depends_on": [
@@ -107,8 +107,9 @@
       "parallelism_notes": "calls KeyedQueue.recover/promote_due from TASK-4576 and lease/apply/KeyedLease.extend from TASK-4575 (queues/keyed/store.py)",
       "assigned_to": null,
       "started_at": "2026-10-30T02:54:04+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4577-keyed-consumer.md"
+      "completed_at": "2026-10-30T04:09:51+00:00",
+      "file": "sdd/tasks/completed/TASK-4577-keyed-consumer.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4578",
