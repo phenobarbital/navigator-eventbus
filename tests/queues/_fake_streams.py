@@ -43,6 +43,35 @@ class FakeClock:
         self.now += milliseconds / 1000.0
 
 
+class _Encoder:
+    """Stands in for ``redis.connection.Encoder`` (what ``Lock`` needs)."""
+
+    def encode(self, value: Any) -> bytes:
+        if isinstance(value, bytes):
+            return value
+        return str(value).encode()
+
+
+def _s(value: Any) -> str:
+    """Normalise a command argument to ``str`` (``decode_responses=True``)."""
+    if isinstance(value, bytes):
+        return value.decode()
+    return value if isinstance(value, str) else str(value)
+
+
+def _bound(raw: Any, default: float) -> tuple[float, bool]:
+    """Parse a ZRANGEBYSCORE bound -> (value, exclusive)."""
+    if raw is None:
+        return default, False
+    text = _s(raw)
+    exclusive = text.startswith("(")
+    if exclusive:
+        text = text[1:]
+    if text in ("-inf", "+inf", "inf"):
+        return (float("-inf") if text == "-inf" else float("inf")), exclusive
+    return float(text), exclusive
+
+
 class _PendingEntry:
     __slots__ = ("consumer", "delivered_at", "times_delivered")
 
@@ -71,8 +100,19 @@ class FakeStreamsRedis:
         self.acked: list[tuple[str, str, str]] = []
         self.calls: list[tuple[str, tuple, dict]] = []
         self._seq = 0
+        self.strings: dict[str, str] = {}
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.sets: dict[str, set[str]] = {}
+        self.zsets: dict[str, dict[str, float]] = {}
+        self._expires_ms: dict[str, float] = {}
+        self._versions: dict[str, int] = {}
         self.connection_pool = type(
-            "_Pool", (), {"connection_kwargs": {"decode_responses": True}}
+            "_Pool",
+            (),
+            {
+                "connection_kwargs": {"decode_responses": True},
+                "get_encoder": staticmethod(lambda: _Encoder()),
+            },
         )()
 
     # -- helpers -------------------------------------------------------
@@ -302,8 +342,407 @@ class FakeStreamsRedis:
             )
         return out
 
+    # -- keyed-queue command families (FEAT-713 / TASK-4574) ------------
+
+    def _bump(self, key: str) -> None:
+        self._versions[key] = self._versions.get(key, 0) + 1
+
+    def _expire_if_due(self, key: str) -> None:
+        """Lazy expiry. Like Redis >= 6.0.9 it does NOT invalidate a WATCH."""
+        due = self._expires_ms.get(key)
+        if due is not None and self.clock.now * 1000.0 >= due:
+            for store in (self.strings, self.hashes, self.sets, self.zsets):
+                store.pop(key, None)
+            self._expires_ms.pop(key, None)
+
+    def _exists(self, key: str) -> bool:
+        self._expire_if_due(key)
+        return any(
+            key in store
+            for store in (self.strings, self.hashes, self.sets, self.zsets)
+        )
+
+    def _cleanup(self, key: str) -> None:
+        """Redis drops a container key once it becomes empty."""
+        for store in (self.hashes, self.sets, self.zsets):
+            if key in store and not store[key]:
+                del store[key]
+                self._expires_ms.pop(key, None)
+
+    def lock(self, name, timeout=None, sleep=0.1, blocking=True,
+             blocking_timeout=None, lock_class=None, thread_local=True):
+        """Return a real ``redis.asyncio.lock.Lock`` bound to this fake."""
+        from redis.asyncio.lock import Lock
+
+        return (lock_class or Lock)(
+            self, name, timeout=timeout, sleep=sleep, blocking=blocking,
+            blocking_timeout=blocking_timeout, thread_local=thread_local,
+        )
+
+    # strings
+
+    async def set(self, name, value, nx=False, xx=False, px=None, ex=None):
+        self._record("set", name, nx=nx, xx=xx, px=px, ex=ex)
+        name = _s(name)
+        present = self._exists(name)
+        if (nx and present) or (xx and not present):
+            return None
+        for store in (self.hashes, self.sets, self.zsets):
+            store.pop(name, None)
+        self.strings[name] = _s(value)
+        self._expires_ms.pop(name, None)
+        if px is not None:
+            self._expires_ms[name] = self.clock.now * 1000.0 + int(px)
+        elif ex is not None:
+            self._expires_ms[name] = self.clock.now * 1000.0 + int(ex) * 1000
+        self._bump(name)
+        return True
+
+    async def get(self, name):
+        self._record("get", name)
+        name = _s(name)
+        self._expire_if_due(name)
+        return self.strings.get(name)
+
+    async def delete(self, *names):
+        self._record("delete", *names)
+        removed = 0
+        for raw in names:
+            name = _s(raw)
+            if self._exists(name):
+                for store in (self.strings, self.hashes, self.sets, self.zsets):
+                    store.pop(name, None)
+                self._expires_ms.pop(name, None)
+                self._bump(name)
+                removed += 1
+        return removed
+
+    async def exists(self, *names):
+        self._record("exists", *names)
+        return sum(1 for n in names if self._exists(_s(n)))
+
+    async def pexpire(self, name, milliseconds):
+        self._record("pexpire", name, milliseconds)
+        name = _s(name)
+        if not self._exists(name):
+            return False
+        self._expires_ms[name] = self.clock.now * 1000.0 + int(milliseconds)
+        self._bump(name)
+        return True
+
+    async def pttl(self, name):
+        self._record("pttl", name)
+        name = _s(name)
+        if not self._exists(name):
+            return -2
+        due = self._expires_ms.get(name)
+        if due is None:
+            return -1
+        return max(0, int(due - self.clock.now * 1000.0))
+
+    # hashes
+
+    async def hset(self, name, key=None, value=None, mapping=None):
+        self._record("hset", name)
+        name = _s(name)
+        self._exists(name)
+        data = self.hashes.setdefault(name, {})
+        items = dict(mapping or {})
+        if key is not None:
+            items[key] = value
+        added = 0
+        for field, val in items.items():
+            if _s(field) not in data:
+                added += 1
+            data[_s(field)] = _s(val)
+        self._bump(name)
+        return added
+
+    async def hsetnx(self, name, key, value):
+        self._record("hsetnx", name, key)
+        name, key = _s(name), _s(key)
+        self._exists(name)
+        data = self.hashes.setdefault(name, {})
+        if key in data:
+            return 0
+        data[key] = _s(value)
+        self._bump(name)
+        return 1
+
+    async def hget(self, name, key):
+        self._record("hget", name, key)
+        name = _s(name)
+        self._expire_if_due(name)
+        return self.hashes.get(name, {}).get(_s(key))
+
+    async def hgetall(self, name):
+        self._record("hgetall", name)
+        name = _s(name)
+        self._expire_if_due(name)
+        return dict(self.hashes.get(name, {}))
+
+    async def hincrby(self, name, key, amount=1):
+        self._record("hincrby", name, key, amount)
+        name, key = _s(name), _s(key)
+        self._exists(name)
+        data = self.hashes.setdefault(name, {})
+        data[key] = str(int(data.get(key, "0")) + int(amount))
+        self._bump(name)
+        return int(data[key])
+
+    async def hdel(self, name, *keys):
+        self._record("hdel", name, *keys)
+        name = _s(name)
+        self._expire_if_due(name)
+        data = self.hashes.get(name, {})
+        removed = sum(1 for k in keys if data.pop(_s(k), None) is not None)
+        if removed:
+            self._bump(name)
+        self._cleanup(name)
+        return removed
+
+    async def hlen(self, name):
+        self._record("hlen", name)
+        name = _s(name)
+        self._expire_if_due(name)
+        return len(self.hashes.get(name, {}))
+
+    # sets
+
+    async def sadd(self, name, *members):
+        self._record("sadd", name, *members)
+        name = _s(name)
+        self._exists(name)
+        data = self.sets.setdefault(name, set())
+        before = len(data)
+        data.update(_s(m) for m in members)
+        self._bump(name)
+        return len(data) - before
+
+    async def srem(self, name, *members):
+        self._record("srem", name, *members)
+        name = _s(name)
+        self._expire_if_due(name)
+        data = self.sets.get(name, set())
+        removed = 0
+        for member in members:
+            if _s(member) in data:
+                data.discard(_s(member))
+                removed += 1
+        if removed:
+            self._bump(name)
+        self._cleanup(name)
+        return removed
+
+    async def smembers(self, name):
+        self._record("smembers", name)
+        name = _s(name)
+        self._expire_if_due(name)
+        return set(self.sets.get(name, set()))
+
+    async def scard(self, name):
+        self._record("scard", name)
+        name = _s(name)
+        self._expire_if_due(name)
+        return len(self.sets.get(name, set()))
+
+    async def sismember(self, name, member):
+        self._record("sismember", name, member)
+        name = _s(name)
+        self._expire_if_due(name)
+        return _s(member) in self.sets.get(name, set())
+
+    # sorted sets
+
+    def _zsorted(self, name: str) -> list[tuple[str, float]]:
+        self._expire_if_due(name)
+        return sorted(self.zsets.get(name, {}).items(), key=lambda kv: (kv[1], kv[0]))
+
+    async def zadd(self, name, mapping, nx=False):
+        self._record("zadd", name, nx=nx)
+        name = _s(name)
+        self._exists(name)
+        data = self.zsets.setdefault(name, {})
+        added = 0
+        for member, score in mapping.items():
+            member = _s(member)
+            if member in data:
+                if nx:
+                    continue
+                data[member] = float(score)
+            else:
+                data[member] = float(score)
+                added += 1
+        self._bump(name)
+        return added
+
+    async def zrange(self, name, start, end, withscores=False):
+        self._record("zrange", name, start, end)
+        items = self._zsorted(_s(name))
+        n = len(items)
+        start = start + n if start < 0 else start
+        end = end + n if end < 0 else end
+        picked = items[max(start, 0): end + 1]
+        return list(picked) if withscores else [m for m, _ in picked]
+
+    async def zrangebyscore(self, name, min, max, start=None, num=None,
+                            withscores=False):
+        self._record("zrangebyscore", name, min, max)
+        lo, lo_x = _bound(min, float("-inf"))
+        hi, hi_x = _bound(max, float("inf"))
+        picked = [
+            (m, sc)
+            for m, sc in self._zsorted(_s(name))
+            if (sc > lo if lo_x else sc >= lo) and (sc < hi if hi_x else sc <= hi)
+        ]
+        if start is not None:
+            picked = picked[start:] if num is None else picked[start: start + num]
+        return list(picked) if withscores else [m for m, _ in picked]
+
+    async def zrem(self, name, *members):
+        self._record("zrem", name, *members)
+        name = _s(name)
+        self._expire_if_due(name)
+        data = self.zsets.get(name, {})
+        removed = sum(1 for m in members if data.pop(_s(m), None) is not None)
+        if removed:
+            self._bump(name)
+        self._cleanup(name)
+        return removed
+
+    async def zcard(self, name):
+        self._record("zcard", name)
+        name = _s(name)
+        self._expire_if_due(name)
+        return len(self.zsets.get(name, {}))
+
+    async def zscore(self, name, member):
+        self._record("zscore", name, member)
+        name = _s(name)
+        self._expire_if_due(name)
+        return self.zsets.get(name, {}).get(_s(member))
+
+    # pipelines / scripts
+
+    def pipeline(self, transaction: bool = True) -> "_FakePipeline":
+        return _FakePipeline(self)
+
+    def register_script(self, script: str) -> "_FakeScript":
+        return _FakeScript(script)
+
+    async def eval(self, script, numkeys, *keys_and_args):
+        raise NotImplementedError(
+            f"FakeStreamsRedis.eval: unsupported script {script.strip().splitlines()[0]!r}"
+        )
+
     async def aclose(self):
         return None
 
     async def close(self):
         return None
+
+
+class _FakePipeline:
+    """WATCH/MULTI/EXEC over FakeStreamsRedis.
+
+    Mirrors redis-py: after ``watch()`` commands run immediately until
+    ``multi()``; without ``watch()`` they are buffered from the start.
+    """
+
+    def __init__(self, redis: FakeStreamsRedis) -> None:
+        self._redis = redis
+        self._watched: dict[str, int] = {}
+        self._queue: list[tuple[str, tuple, dict]] = []
+        self._buffering = True
+
+    async def __aenter__(self) -> "_FakePipeline":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.reset()
+
+    async def watch(self, *names: str) -> bool:
+        self._buffering = False
+        for raw in names:
+            name = _s(raw)
+            self._redis._expire_if_due(name)
+            self._watched[name] = self._redis._versions.get(name, 0)
+        return True
+
+    def multi(self) -> None:
+        self._buffering = True
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        target = getattr(self._redis, name)
+        if not self._buffering:
+            return target
+
+        def _record(*args: Any, **kwargs: Any) -> "_FakePipeline":
+            self._queue.append((name, args, kwargs))
+            return self
+
+        return _record
+
+    async def execute(self) -> list:
+        from redis.exceptions import WatchError
+
+        try:
+            for name, version in self._watched.items():
+                self._redis._expire_if_due(name)
+                if self._redis._versions.get(name, 0) != version:
+                    raise WatchError("Watched variable changed.")
+            results = []
+            for name, args, kwargs in self._queue:
+                results.append(await getattr(self._redis, name)(*args, **kwargs))
+            return results
+        finally:
+            await self.reset()
+
+    async def reset(self) -> None:
+        self._watched.clear()
+        self._queue.clear()
+        self._buffering = True
+
+    async def aclose(self) -> None:
+        await self.reset()
+
+
+class _FakeScript:
+    """Emulates the redis-py Lock scripts; delegates to a real client otherwise."""
+
+    def __init__(self, script: str) -> None:
+        self.script = script
+
+    async def __call__(self, keys=(), args=(), client=None):
+        from redis.asyncio.lock import Lock
+
+        if not isinstance(client, FakeStreamsRedis):
+            return await client.eval(self.script, len(keys), *keys, *args)
+        name = _s(keys[0])
+        stored = await client.get(name)
+        token = _s(args[0])
+        if self.script == Lock.LUA_RELEASE_SCRIPT:
+            if stored is None or stored != token:
+                return 0
+            await client.delete(name)
+            return 1
+        if self.script == Lock.LUA_EXTEND_SCRIPT:
+            if stored is None or stored != token:
+                return 0
+            ttl = await client.pttl(name)
+            if ttl < 0:
+                return 0
+            additional = int(_s(args[1]))
+            new_ttl = additional if _s(args[2]) == "1" else ttl + additional
+            await client.pexpire(name, new_ttl)
+            return 1
+        if self.script == Lock.LUA_REACQUIRE_SCRIPT:
+            if stored is None or stored != token:
+                return 0
+            await client.pexpire(name, int(_s(args[1])))
+            return 1
+        raise NotImplementedError(
+            f"FakeStreamsRedis script not emulated: {self.script.strip().splitlines()[0]!r}"
+        )
