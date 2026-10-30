@@ -841,6 +841,7 @@ class _FakeScript:
     async def __call__(self, keys=(), args=(), client=None):
         from redis.asyncio.lock import Lock
 
+        await asyncio.sleep(0)  # a script call is a network round trip too
         if not isinstance(client, FakeStreamsRedis):
             return await client.eval(self.script, len(keys), *keys, *args)
         name = _s(keys[0])

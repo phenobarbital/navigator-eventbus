@@ -289,3 +289,30 @@ async def test_wrongtype_for_every_stream_command(r):
     for call in (lambda: r.get("s"), lambda: r.hset("s", "a", "1")):
         with pytest.raises(ResponseError, match="WRONGTYPE"):
             await call()
+
+
+async def test_lock_scripts_yield_to_the_loop(r):
+    """R2-5: release/extend/reacquire are network round trips like any command:
+    a peer scheduled alongside must run BEFORE the script completes."""
+    import asyncio
+
+    for action in ("release", "extend", "reacquire"):
+        await r.delete("lk")
+        lock = r.lock("lk", timeout=10, blocking=False)
+        assert await lock.acquire(blocking=False)
+        order: list[str] = []
+
+        async def run_action(lock=lock, action=action):
+            if action == "release":
+                await lock.release()
+            elif action == "extend":
+                await lock.extend(5)
+            else:
+                await lock.reacquire()
+            order.append("script")
+
+        async def peer():
+            order.append("peer")
+
+        await asyncio.gather(run_action(), peer())
+        assert order == ["peer", "script"], (action, order)
