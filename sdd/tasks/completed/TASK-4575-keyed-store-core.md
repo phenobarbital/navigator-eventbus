@@ -305,4 +305,12 @@ Completion Note instead of improvising. Use `self.logger`, never `print`.
 
 ## Completion Note
 
-*(filled by the implementing agent)*
+Implemented store.py (KeyedQueue, KeyedLease, backoff_ms, `_to_message`, `lease_key`) + tests/queues/keyed/test_store.py (26 tests). `tests/queues`: 228 passed.
+
+Decisions where the task was silent (flag for review):
+- `lease()` loops over up to 16 signals per call instead of returning None on the first non-leasable one; it still never calls `receive()` while paused.
+- `backoff_ms` is fed the attempts count BEFORE the increment (first retry = base). An explicit `delay_ms=0` is honoured (`is not None`, not `or`).
+- On a clean empty key the guarded SREM also removes the key's stale `delayed` entry.
+- `apply()` hands the message to `on_dlq` (max_attempts) after the fence checks but before EXEC; on a WatchError at EXEC it raises LeaseLost, so a DLQ duplicate is possible (at-least-once, same as expire_head).
+- `expire_head` does not take the lock itself (caller holds it); it bumps `KeyedQueue.expired_count` so drain (TASK-4578) can report `expired`.
+- Uses `Lock(client, ...)` directly (the fake also got a `.lock()` helper in TASK-4574, unused here).

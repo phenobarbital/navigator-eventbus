@@ -54,7 +54,7 @@
       "feature_id": "FEAT-713",
       "feature": "keyed-queue",
       "spec": "sdd/specs/keyed-queue.spec.md",
-      "status": "in-progress",
+      "status": "done",
       "priority": "high",
       "effort": "L",
       "depends_on": [
@@ -65,8 +65,9 @@
       "parallelism_notes": "imports KeyedQueueConfig/KeyedMessage/Outcome/LeaseLost from TASK-4573 (queues/keyed/config.py); tests need zset/hash/pipeline/register_script from TASK-4574 (tests/queues/_fake_streams.py)",
       "assigned_to": null,
       "started_at": "2026-10-30T02:54:04+00:00",
-      "completed_at": null,
-      "file": "sdd/tasks/active/TASK-4575-keyed-store-core.md"
+      "completed_at": "2026-10-30T02:59:08+00:00",
+      "file": "sdd/tasks/completed/TASK-4575-keyed-store-core.md",
+      "verification": "verified"
     },
     {
       "id": "TASK-4576",
